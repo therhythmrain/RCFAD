@@ -1,0 +1,116 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quickstart-pytorch-rcfad"
+version = "1.0.4"
+description = "RC-FAD v4: reproducible Risk-Constrained Federated Anomaly Detection with PyTorch and Flower"
+license = "Apache-2.0"
+dependencies = [
+    "flwr[simulation]>=1.26.0",
+    "flwr-datasets[vision]>=0.5.0",
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+    "pandas>=2.0.0",
+    "wandb>=0.17.8",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.flwr.app]
+publisher = "flwrlabs"
+
+[tool.flwr.app.components]
+serverapp = "RCFAD.server_app:app"
+clientapp = "RCFAD.client_app:app"
+
+[tool.flwr.app.config]
+# Basic FL settings
+num-server-rounds = 30
+fraction-evaluate = 0.5
+local-epochs = 1
+learning-rate = 0.001
+batch-size = 16
+central-batch-size = 32
+
+# Dataset settings
+# Supported: "mnist", "fmnist", "cifar10", "creditcard", "baf", "ai4i", "secom"
+dataset-name = "cifar10"
+anomaly-class = 1
+partition-scheme = "risk_hetero"
+min-anomaly-ratio = 0.005
+max-anomaly-ratio = 0.10
+dirichlet-alpha = 0.3
+data-root = "./data"
+seed = 42
+
+# Aggregation
+# Use "risk_weight" for RC-FAD; use "num-examples" for FedAvg-like baselines.
+aggregation-key = "risk_weight"
+
+# Low-FPR risk constraint
+epsilon-fpr = 0.05
+threshold-init = 0.5
+global-eval-threshold = 0.5
+temperature = 0.10
+
+# Cost-sensitive risk loss
+c-fn = 3.0
+c-fp = 1.0
+
+# Risk-state-driven minority enhancement
+global-anomaly-ratio = 0.10
+beta-power = 0.3
+beta-alpha = 0.3
+beta-zeta = 2.0
+beta-min = 1.0
+beta-max = 8.0
+beta-reference-ratio = 0.0
+beta-gate-mode = "smooth"
+beta-round-decay = 0.0
+
+# Joint threshold/Lagrangian optimization
+mu-fnr = 0.05
+eta-lambda = 1.0
+lr-tau = 0.0002
+
+# Stable RC-FAD v2 settings
+lambda-init = 0.5
+fpr-penalty = 1.0
+risk-weight-warmup-rounds = 3
+risk-gamma-fnr = 0.5
+risk-gamma-fpr = 2.0
+risk-weight-min-factor = 0.5
+risk-weight-max-factor = 2.0
+update-reliability-rho = 1.0
+update-reliability-floor = 0.0
+update-reliability-delta = 1e-12
+
+# Baseline and diagnostic options
+loss-type = "bce"
+focal-gamma = 2.0
+focal-alpha = -1.0
+fedprox-mu = 0.0
+moon-mu = 0.0
+moon-temperature = 0.5
+fedsimsup-mu = 0.0
+fedsimsup-temperature = 0.5
+fedsimsup-supervisor-ema = 0.5
+eval-threshold-mode = "learned"
+threshold-scope = "client"
+epsilon-heterogeneous = false
+epsilon-min = 0.01
+epsilon-max = 0.10
+normal-shift-max = 0.0
+device = "auto"
+client-device = "auto"
+server-device = "auto"
+
+# Experiment bookkeeping
+results-root = "outputs/experiments"
+run-name = ""
+scenario-name = ""
+best-metric = "auprc"
+method-name = "rcfad"

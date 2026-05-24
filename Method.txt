@@ -1,0 +1,1387 @@
+
+第三章 可导低误报约束下的联邦个性化风险优化方法
+3.1 问题定义与研究动机
+风险敏感异常检测要求模型在识别少数类异常事件的同时严格控制正常样本被误判为异常的比例。与普通分类任务不同，此类任务具有明显的代价敏感性：误报率过高会增加系统拦截、告警或人工审核成本，而漏报率过高则会导致潜在风险事件无法被及时发现。因此，风险敏感异常检测不能仅以整体分类准确率作为优化目标，而需要在低误报约束下提升异常样本的检出能力。
+在联邦学习环境中，该问题进一步受到客户端数据异构的影响。不同客户端可能对应不同机构、区域、业务系统或用户群体，其正常样本分布、异常样本比例和风险模式往往存在差异。设联邦系统包含 (K) 个客户端，第 (k) 个客户端的数据集为
+[
+\mathcal{D}k={(x_i^k,y_i^k)}{i=1}^{n_k},
+]
+其中 (x_i^k) 表示样本，(y_i^k\in{0,1}) 表示标签。本文约定 (y_i^k=0) 表示正常样本，(y_i^k=1) 表示异常样本。全局模型参数记为 (w)，模型输出异常分数为
+[
+s_w(x)\in[0,1].
+]
+异常分数越大，表示样本越可能属于异常类。传统异常检测方法通常使用统一阈值 (\tau) 进行判别：
+[
+\hat{y}=\mathbb{I}(s_w(x)\geq \tau).
+]
+然而，在联邦异构环境下，不同客户端的正常样本异常分数分布可能存在明显差异。若所有客户端共享统一阈值，则该阈值往往会受到误报约束最严格客户端的影响，从而导致部分客户端异常样本难以超过阈值，增加漏报风险。因此，统一阈值难以适应客户端之间的风险分布差异。
+为此，本文为每个客户端引入个性化决策阈值 (\tau_k)，客户端 (k) 的预测规则定义为
+[
+\hat{y}_i^k=
+\mathbb{I}(s_w(x_i^k)\geq \tau_k).
+]
+在该设定下，客户端 (k) 的误报率和漏报率分别定义为
+[
+FPR_k(w,\tau_k)
+\frac{
+\sum_{i:y_i^k=0}
+\mathbb{I}(s_w(x_i^k)\geq \tau_k)
+}{
+N_{k,0}
+},
+]
+[
+FNR_k(w,\tau_k)
+\frac{
+\sum_{i:y_i^k=1}
+\mathbb{I}(s_w(x_i^k)<\tau_k)
+}{
+N_{k,1}
+},
+]
+其中
+[
+N_{k,0}=\sum_{i=1}^{n_k}\mathbb{I}(y_i^k=0),
+\quad
+N_{k,1}=\sum_{i=1}^{n_k}\mathbb{I}(y_i^k=1).
+]
+风险敏感异常检测通常要求客户端级误报率满足
+[
+FPR_k(w,\tau_k)\leq \epsilon_k,
+\quad k=1,\dots,K,
+]
+其中 (\epsilon_k) 表示客户端 (k) 的可接受误报上限。然而，直接优化上述目标存在两个困难。首先，(FPR_k) 和 (FNR_k) 中包含不可导的指示函数，难以直接用于梯度优化。其次，客户端之间存在异构风险分布，仅依靠统一阈值或训练后阈值校准难以使低误报需求参与模型训练过程。
+基于上述问题，本文提出一种可导低误报约束下的联邦个性化风险优化方法 RC-FAD。该方法将客户端级误报约束转化为可导风险约束，并将客户端个性化阈值作为可学习变量纳入联邦训练过程，从而在优化全局模型参数的同时实现本地决策边界的自适应学习。
+
+3.2 可导低误报约束的联邦个性化风险优化框架
+为使低误报约束能够参与联邦训练，本文首先构造误报率和漏报率的可导代理形式。由于指示函数
+[
+\mathbb{I}(s_w(x)\geq \tau_k)
+]
+不可导，本文采用 Sigmoid 函数进行平滑近似：
+[
+\mathbb{I}(s_w(x_i^k)\geq \tau_k)
+\approx
+\sigma\left(\alpha(s_w(x_i^k)-\tau_k)\right),
+]
+其中
+[
+\sigma(z)=\frac{1}{1+\exp(-z)},
+]
+(\alpha>0) 为平滑系数。基于该近似，客户端 (k) 的可导误报率定义为
+[
+\widetilde{FPR}_k(w,\tau_k)
+\frac{
+\sum_{i:y_i^k=0}
+\sigma\left(\alpha(s_w(x_i^k)-\tau_k)\right)
+}{
+N_{k,0}
+}.
+]
+类似地，客户端 (k) 的可导漏报率定义为
+[
+\widetilde{FNR}_k(w,\tau_k)
+\frac{
+\sum_{i:y_i^k=1}
+\left[
+1-
+\sigma\left(\alpha(s_w(x_i^k)-\tau_k)\right)
+\right]
+}{
+N_{k,1}
+}.
+]
+在此基础上，本文将联邦风险敏感异常检测建模为带有客户端个性化阈值的低误报约束优化问题：
+[
+\min_{w,{\tau_k}{k=1}^{K}}
+\sum{k=1}^{K}
+\pi_k
+\left[
+\mathcal{L}_{risk}^k(w,\tau_k)
++
+\mu \widetilde{FNR}_k(w,\tau_k)
+\right],
+]
+subject to
+[
+\widetilde{FPR}_k(w,\tau_k)\leq \epsilon_k,
+\quad k=1,\dots,K.
+]
+其中，(w) 表示全局模型参数，(\tau_k) 表示客户端 (k) 的个性化决策阈值，(\epsilon_k) 表示客户端级误报约束上限，
+[
+\pi_k=\frac{n_k}{\sum_{j=1}^{K}n_j}
+]
+表示客户端权重，(\mu) 为漏报风险控制系数。
+上述优化问题体现了本文方法的核心思想：低误报约束不再只是训练后的评价指标，而是直接进入联邦优化目标；客户端阈值也不再是固定超参数或训练后校准参数，而是与模型参数共同优化的本地可学习变量。因此，本文方法优化的是
+[
+(w,{\tau_k}_{k=1}^{K}),
+]
+而不是仅优化模型参数 (w)。
+为求解该约束优化问题，本文引入客户端级拉格朗日乘子 (\lambda_k\geq0)，将客户端 (k) 的本地目标写为
+[
+\mathcal{J}_k(w,\tau_k,\lambda_k)
+\mathcal{L}_{risk}^k(w,\tau_k)
++
+\mu \widetilde{FNR}_k(w,\tau_k)
++
+\lambda_k
+\left[
+\widetilde{FPR}k(w,\tau_k)-\epsilon_k
+\right]+,
+]
+其中
+[
+[z]_+=\max(z,0).
+]
+当客户端 (k) 的可导误报率超过约束上限时，约束惩罚项被激活，从而抑制导致误报增加的更新方向；当误报率处于可接受范围内时，该惩罚项减弱，使模型能够继续关注异常样本检出能力。
+与集中式低误报约束学习不同，本文面对的是多客户端异构数据环境；与联邦全局阈值估计方法不同，本文不依赖单一全局阈值，而是为每个客户端学习个性化阈值；与训练后阈值校准不同，本文将阈值嵌入训练过程，使误报约束能够影响模型参数更新。因此，该框架可以概括为：
+[
+\boxed{
+\text{客户端级低误报约束}
++
+\text{模型参数与个性化阈值联合优化}
++
+\text{联邦异构风险适配}
+}
+]
+该框架为后续的客户端个性化阈值联合学习、风险状态驱动的动态少数类增强以及误报约束驱动的风险可靠性聚合提供了统一基础。
+
+3.3 客户端个性化阈值联合学习机制
+在风险敏感异常检测任务中，决策阈值直接影响误报率和漏报率。传统方法通常采用固定阈值、全局统一阈值或训练后阈值校准策略。然而，在联邦异构环境中，不同客户端的正常样本分布、异常样本比例和风险模式存在差异，统一阈值难以同时满足所有客户端的低误报需求。因此，本文将客户端决策阈值 (\tau_k) 作为本地可学习变量，并在本地训练过程中与模型参数联合优化。
+3.3.1 统一阈值的局限性
+设客户端 (k) 上正常样本的异常分数随机变量为
+[
+S_{k,0}=s_w(X_k|y=0).
+]
+若客户端 (k) 需要满足误报约束
+[
+FPR_k(w,\tau_k)\leq \epsilon_k,
+]
+则阈值至少应满足
+[
+\tau_k\geq Q_{k,0}(1-\epsilon_k),
+]
+其中 (Q_{k,0}(1-\epsilon_k)) 表示客户端 (k) 上正常样本异常分数分布的 ((1-\epsilon_k))-分位数。若所有客户端共享统一阈值 (\tau)，则为了同时满足所有客户端的低误报约束，需要有
+[
+\tau\geq \max_k Q_{k,0}(1-\epsilon_k).
+]
+该式表明，全局统一阈值会受到最严格客户端的约束影响。当某些客户端的正常样本异常分数整体偏高，或者其误报约束更加严格时，全局阈值会被迫升高。过高的统一阈值虽然可能降低部分客户端的误报率，但也会导致其他客户端的异常样本更难超过阈值，从而增加漏报风险。因此，在客户端风险分布异构的联邦环境中，引入客户端个性化阈值具有必要性。该命题的详细证明见附录 A。
+3.3.2 联合学习与训练后校准的区别
+本文提出的客户端个性化阈值并不是训练后的阈值校准。训练后阈值校准通常先在不考虑阈值约束的情况下训练模型参数：
+[
+w^*
+\arg\min_w
+\sum_{k=1}^{K}
+\pi_k \mathcal{L}_k(w),
+]
+然后在固定模型 (w^*) 的基础上选择本地阈值：
+[
+\tau_k^*
+\arg\min_{\tau_k}
+\mathcal{R}_k(w^*,\tau_k).
+]
+这种方法中，阈值调整发生在模型训练完成之后，无法改变模型学习到的异常分数分布，也无法使误报约束反向影响模型参数更新。因此，训练后校准只能调整最终判别边界，而不能影响模型训练过程中的风险优化方向。
+与此不同，本文将模型参数和客户端阈值作为联合优化变量：
+[
+(w^,{\tau_k^}_{k=1}^{K})
+\arg\min_{w,{\tau_k}}
+\sum_{k=1}^{K}
+\pi_k
+\left[
+\mathcal{L}_{risk}^k(w,\tau_k)
++
+\mu \widetilde{FNR}_k(w,\tau_k)
+\right],
+]
+subject to
+[
+\widetilde{FPR}_k(w,\tau_k)\leq \epsilon_k.
+]
+也就是说，本文方法并不是
+[
+w\text{ training}+\tau_k\text{ post-hoc tuning},
+]
+而是
+[
+(w,\tau_k)\text{ joint optimization}.
+]
+在联合优化过程中，客户端阈值 (\tau_k) 的变化会影响可导误报率和可导漏报率，从而进一步影响本地损失梯度；同时，模型参数 (w) 的更新也会改变异常分数分布，使阈值能够与模型输出共同适配本地风险结构。
+3.3.3 客户端阈值与模型参数的联合更新
+在第 (t) 轮通信中，客户端 (k) 从服务器接收全局模型 (w^t)，并初始化本地模型为
+[
+w_k^{t,0}=w^t.
+]
+客户端基于本地目标
+[
+\mathcal{J}_k(w,\tau_k,\lambda_k)
+\mathcal{L}_{risk}^k(w,\tau_k)
++
+\mu \widetilde{FNR}_k(w,\tau_k)
++
+\lambda_k
+[
+\widetilde{FPR}k(w,\tau_k)-\epsilon_k
+]+
+]
+同时更新模型参数和个性化阈值。对于第 (e) 个本地更新步，模型参数更新为
+[
+w_k^{t,e+1}
+w_k^{t,e}
+\eta_w
+\nabla_w
+\mathcal{J}_k
+(w_k^{t,e},\tau_k^{t,e},\lambda_k^t),
+]
+客户端阈值更新为
+[
+\tau_k^{t,e+1}
+\tau_k^{t,e}
+\eta_{\tau}
+\nabla_{\tau_k}
+\mathcal{J}_k
+(w_k^{t,e},\tau_k^{t,e},\lambda_k^t),
+]
+其中 (\eta_w) 和 (\eta_{\tau}) 分别表示模型参数和阈值的学习率。为保证阈值处于合理范围内，本文对阈值进行投影：
+[
+\tau_k^{t,e+1}
+\leftarrow
+\Pi_{[\tau_{\min},\tau_{\max}]}
+\left(
+\tau_k^{t,e+1}
+\right).
+]
+若异常分数满足 (s_w(x)\in[0,1])，则可设置 (\tau_{\min}=0)，(\tau_{\max}=1)。
+本地训练结束后，客户端根据当前误报约束违背程度更新拉格朗日乘子：
+[
+\lambda_k^{t+1}
+\left[
+\lambda_k^t
++
+\eta_{\lambda}
+\left(
+\widetilde{FPR}k^{t+1}-\epsilon_k
+\right)
+\right]+.
+]
+当客户端误报率超过约束上限时，(\lambda_k) 增大，从而在后续训练中增强误报约束惩罚；当误报率低于约束上限时，(\lambda_k) 不再继续增大，使模型能够更多关注异常召回和整体风险检测性能。
+综上，客户端个性化阈值联合学习使每个客户端能够在共享全局模型的基础上保留本地决策灵活性，从而更适合联邦异构环境下的风险敏感异常检测任务。
+
+3.4 风险状态驱动的动态少数类增强机制
+风险敏感异常检测通常存在显著的类别不平衡问题。异常样本在整体数据中占比较低，但其识别结果对系统风险控制具有重要影响。传统类别加权方法通常根据固定类别比例设置权重，难以反映联邦训练过程中不同客户端实时变化的风险状态。
+在联邦异构环境中，不同客户端的异常样本比例、漏报风险和误报约束状态可能存在较大差异。对于异常样本比例较低且漏报率较高的客户端，模型需要增强异常类学习；但如果该客户端的误报率已经超过约束上限，继续增强异常类可能进一步提高误报风险。因此，少数类增强强度不应仅由类别比例决定，而应同时考虑客户端当前的风险状态和低误报约束。
+3.4.1 客户端风险状态刻画
+在第 (t) 轮通信中，客户端 (k) 的风险状态由异常样本比例、可导漏报率和误报约束违背程度共同刻画。异常样本比例定义为
+[
+r_k^t
+\frac{N_{k,1}}{N_{k,0}+N_{k,1}}.
+]
+可导漏报率定义为
+[
+\widetilde{FNR}_k^t
+\widetilde{FNR}_k(w^t,\tau_k^t).
+]
+误报约束违背项定义为
+[
+v_k^t
+[\widetilde{FPR}k^t-\epsilon_k]+,
+]
+其中
+[
+\widetilde{FPR}_k^t
+\widetilde{FPR}_k(w^t,\tau_k^t).
+]
+因此，客户端 (k) 的风险状态可表示为
+[
+\mathcal{S}_k^t
+\left(
+r_k^t,
+\widetilde{FNR}_k^t,
+v_k^t
+\right).
+]
+该状态同时反映异常样本稀缺程度、异常漏报风险和误报约束违背程度。
+3.4.2 动态少数类增强因子
+基于客户端风险状态，本文定义动态少数类增强因子为
+[
+\beta_k^t
+\beta_{\min}
++
+(\beta_{\max}-\beta_{\min})
+\sigma
+\left(
+a_1(1-r_k^t)
++
+a_2\widetilde{FNR}_k^t
+a_3 v_k^t
+\right),
+]
+其中，(\beta_{\min}) 和 (\beta_{\max}) 分别表示增强因子的下界和上界，满足
+[
+0<\beta_{\min}\leq \beta_k^t\leq \beta_{\max}.
+]
+参数 (a_1,a_2,a_3>0) 分别控制异常样本比例、漏报风险和误报超限状态对增强因子的影响。
+该设计包含三层含义。第一，当客户端异常样本比例 (r_k^t) 较低时，(1-r_k^t) 较大，增强因子随之增大，从而缓解异常样本稀缺造成的训练偏置。第二，当客户端可导漏报率 (\widetilde{FNR}_k^t) 较高时，增强因子增大，使模型更加关注异常样本。第三，当客户端误报率超过约束上限时，(v_k^t) 增大，增强因子受到抑制，避免模型为了降低漏报而过度扩大异常判定区域。
+基于动态增强因子，客户端 (k) 的风险检测损失可定义为
+[
+\mathcal{L}_{risk}^k(w;\beta_k^t)
+-\frac{1}{n_k}
+\sum_{i=1}^{n_k}
+\left[
+\beta_k^t y_i^k \log p_i^k
++
+(1-y_i^k)\log(1-p_i^k)
+\right],
+]
+其中
+[
+p_i^k=s_w(x_i^k).
+]
+由于异常类样本对应 (y_i^k=1)，因此 (\beta_k^t) 主要作用于异常类损失项，使模型能够根据客户端风险状态动态调整对异常样本的关注程度。
+3.4.3 风险单调性
+动态增强因子满足以下风险单调性：
+[
+\frac{\partial \beta_k^t}{\partial r_k^t}<0,
+\quad
+\frac{\partial \beta_k^t}{\partial \widetilde{FNR}_k^t}>0,
+\quad
+\frac{\partial \beta_k^t}
+{\partial [\widetilde{FPR}k^t-\epsilon_k]+}<0.
+]
+该性质说明：异常样本越稀缺，增强强度越大；漏报风险越高，增强强度越大；误报约束违背越严重，增强强度越小。详细推导见附录 B。
+因此，本文提出的少数类增强机制不是简单的静态类别重加权，而是由客户端类别稀缺程度、漏报风险和误报约束状态共同决定的动态风险调节策略。该机制能够在增强异常样本学习的同时避免破坏低误报约束。
+
+3.5 误报约束驱动的风险可靠性聚合机制
+在联邦学习中，服务端通常根据客户端样本量对本地模型进行加权聚合。经典 FedAvg 方法采用如下形式：
+[
+w^{t+1}
+\sum_{k=1}^{K}
+\frac{n_k}{\sum_{j=1}^{K}n_j}
+w_k^{t+1}.
+]
+该方法能够反映不同客户端的数据规模贡献，但并未考虑客户端的风险状态。在风险敏感异常检测任务中，不同客户端的误报率、漏报率和更新稳定性可能存在显著差异。若仍然仅依据样本量进行聚合，则高误报、强偏移或更新不稳定的客户端可能对全局模型产生过大影响，进而破坏全局模型在低误报约束下的稳定性。
+为此，本文设计误报约束驱动的风险可靠性聚合机制。该机制在服务端综合考虑客户端数据规模、漏报风险、误报约束违背程度以及模型更新可靠性，使聚合过程不仅关注数据量贡献，也关注客户端更新是否符合风险约束要求。
+3.5.1 更新可靠性建模
+在第 (t) 轮通信中，客户端 (k) 完成本地训练后上传本地模型 (w_k^{t+1})。客户端模型更新量定义为
+[
+\Delta w_k^t
+w_k^{t+1}-w^t.
+]
+参与训练的客户端集合记为 (\mathcal{K}_t)，平均更新方向定义为
+[
+\overline{\Delta w}^{t}
+\frac{1}{|\mathcal{K}t|}
+\sum{k\in \mathcal{K}_t}
+\Delta w_k^t.
+]
+为了刻画客户端更新方向相对于整体更新趋势的偏离程度，本文定义更新可靠性因子为
+[
+q_k^t
+\exp
+\left(
+-\rho
+\frac{
+|\Delta w_k^t-\overline{\Delta w}^{t}|_2
+}{
+|\overline{\Delta w}^{t}|_2+\delta
+}
+\right),
+]
+其中，(\rho>0) 为可靠性衰减系数，(\delta>0) 为稳定项。由定义可知，
+[
+0<q_k^t\leq 1.
+]
+当客户端更新方向接近平均更新方向时，(q_k^t) 较大；当客户端更新明显偏离整体趋势时，(q_k^t) 减小，从而降低该客户端对全局模型的影响。
+3.5.2 风险可靠性聚合权重
+本文定义客户端 (k) 在第 (t) 轮的未归一化风险聚合得分为
+[
+a_k^t
+n_k
+\left(
+1+\gamma_1 \widetilde{FNR}_k^t
+\right)
+\exp
+\left(
+-\gamma_2
+[
+\widetilde{FPR}k^t-\epsilon_k
+]+
+\right)
+q_k^t,
+]
+其中，(\gamma_1>0) 控制漏报风险关注强度，(\gamma_2>0) 控制误报超限抑制强度。归一化聚合权重定义为
+[
+\omega_k^t
+\frac{
+a_k^t
+}{
+\sum_{j\in \mathcal{K}_t}a_j^t
+}.
+]
+展开可得：
+[
+\omega_k^t
+\frac{
+n_k
+(1+\gamma_1 \widetilde{FNR}k^t)
+\exp
+\left(
+-\gamma_2[\widetilde{FPR}k^t-\epsilon_k]+
+\right)
+q_k^t
+}{
+\sum{j\in \mathcal{K}_t}
+n_j
+(1+\gamma_1 \widetilde{FNR}_j^t)
+\exp
+\left(
+-\gamma_2[\widetilde{FPR}j^t-\epsilon_j]+
+\right)
+q_j^t
+}.
+]
+该权重由四部分组成。(n_k) 表示数据规模贡献；((1+\gamma_1\widetilde{FNR}_k^t)) 表示漏报风险关注项；(\exp(-\gamma_2[\widetilde{FPR}k^t-\epsilon_k]+)) 表示误报超限抑制项；(q_k^t) 表示更新可靠性因子。服务端据此更新全局模型：
+[
+w^{t+1}
+\sum_{k\in \mathcal{K}_t}
+\omega_k^t
+w_k^{t+1}.
+]
+该聚合机制从传统的样本量驱动聚合扩展为风险约束驱动聚合，使全局模型更新能够同时考虑客户端贡献、风险状态和更新稳定性。
+3.5.3 聚合性质
+所设计的聚合权重满足非负性和归一性：
+[
+\omega_k^t\geq0,
+\quad
+\sum_{k\in\mathcal{K}_t}\omega_k^t=1.
+]
+同时，在其他条件相同的情况下，误报超限越严重的客户端，其聚合权重越小；漏报风险越高的客户端，其聚合权重越大；更新偏离整体趋势越明显的客户端，其聚合权重越小。上述性质的证明见附录 C。
+综上，误报约束驱动的风险可靠性聚合机制具有三个作用：一是保留样本量贡献，二是关注漏报风险较高的客户端，三是抑制误报超限或更新不稳定的客户端。该机制能够提高全局模型在联邦异构环境下的风险控制稳定性。
+
+3.6 RC-FAD 总体算法流程
+前文分别介绍了可导低误报约束优化框架、客户端个性化阈值联合学习机制、风险状态驱动的动态少数类增强机制以及误报约束驱动的风险可靠性聚合机制。本节将上述模块整合为完整的 RC-FAD 方法。
+RC-FAD 的整体思想是：在每一轮联邦训练中，客户端基于本地数据计算当前风险状态，并在低误报约束下联合更新模型参数与个性化阈值；服务端则根据客户端上传的风险状态和更新可靠性计算聚合权重，得到下一轮全局模型。该过程使低误报约束贯穿于客户端训练和服务端聚合两个阶段。
+3.6.1 客户端本地优化流程
+在第 (t) 轮通信开始时，服务端向参与训练的客户端集合 (\mathcal{K}_t) 广播当前全局模型参数 (w^t)。客户端 (k) 初始化本地模型为
+[
+w_k^{t,0}=w^t.
+]
+客户端基于当前模型和阈值计算可导误报率、可导漏报率和误报约束违背项：
+[
+\widetilde{FPR}_k^t
+\widetilde{FPR}_k(w^t,\tau_k^t),
+]
+[
+\widetilde{FNR}_k^t
+\widetilde{FNR}_k(w^t,\tau_k^t),
+]
+[
+v_k^t
+[\widetilde{FPR}k^t-\epsilon_k]+.
+]
+随后根据风险状态计算动态少数类增强因子 (\beta_k^t)，并构造本地约束优化目标：
+[
+\mathcal{J}_k(w,\tau_k,\lambda_k)
+\mathcal{L}_{risk}^k(w;\beta_k^t)
++
+\mu\widetilde{FNR}_k(w,\tau_k)
++
+\lambda_k
+[
+\widetilde{FPR}k(w,\tau_k)-\epsilon_k
+]+.
+]
+客户端在本地训练过程中同时更新 (w) 和 (\tau_k)。经过 (E) 步本地更新后，客户端得到本地模型 (w_k^{t+1}) 和个性化阈值 (\tau_k^{t+1})，并更新拉格朗日乘子：
+[
+\lambda_k^{t+1}
+\left[
+\lambda_k^t
++
+\eta_{\lambda}
+\left(
+\widetilde{FPR}k^{t+1}-\epsilon_k
+\right)
+\right]+.
+]
+最后，客户端向服务端上传本地模型、可导误报率、可导漏报率、个性化阈值以及模型更新量。
+3.6.2 服务端风险可靠性聚合流程
+服务端接收客户端上传的信息后，首先计算每个客户端的模型更新量：
+[
+\Delta w_k^t
+w_k^{t+1}-w^t.
+]
+然后计算平均更新方向：
+[
+\overline{\Delta w}^{t}
+\frac{1}{|\mathcal{K}t|}
+\sum{k\in\mathcal{K}_t}
+\Delta w_k^t.
+]
+基于客户端更新偏移程度，服务端计算更新可靠性因子 (q_k^t)，再计算聚合权重 (\omega_k^t)，最终更新全局模型：
+[
+w^{t+1}
+\sum_{k\in\mathcal{K}_t}
+\omega_k^t
+w_k^{t+1}.
+]
+需要注意的是，个性化阈值 (\tau_k) 不需要在服务端进行全局平均。由于 (\tau_k) 反映的是客户端本地风险分布和决策边界，其更新应保留在客户端侧。这样既保留了联邦模型的全局共享能力，也保持了客户端决策边界的本地适应性。
+3.6.3 算法描述
+RC-FAD 的完整流程如算法 3-1 所示。
+\begin{algorithm}[t]
+\caption{RC-FAD: Risk-Constrained Federated Anomaly Detection}
+\label{alg:rcfad}
+\begin{algorithmic}[1]
+\REQUIRE Client datasets $\{\mathcal{D}_k\}_{k=1}^{K}$, initial model $w^0$, initial thresholds $\{\tau_k^0\}_{k=1}^{K}$, FPR limits $\{\epsilon_k\}_{k=1}^{K}$, communication rounds $T$, local steps $E$
+\ENSURE Global model $w^T$ and personalized thresholds $\{\tau_k^T\}_{k=1}^{K}$
+
+\STATE Initialize dual variables $\lambda_k^0=0$ for all clients
+\FOR{$t=0,1,\dots,T-1$}
+    \STATE Server selects participating clients $\mathcal{K}_t$
+    \STATE Server broadcasts global model $w^t$ to clients in $\mathcal{K}_t$
+    \FOR{each client $k\in\mathcal{K}_t$ in parallel}
+        \STATE Initialize local model $w_k^{t,0}=w^t$
+        \STATE Compute $\widetilde{FPR}_k^t$, $\widetilde{FNR}_k^t$, and $v_k^t=[\widetilde{FPR}_k^t-\epsilon_k]_+$
+        \STATE Compute dynamic minority enhancement factor $\beta_k^t$
+        \FOR{$e=0,1,\dots,E-1$}
+            \STATE Construct local objective $\mathcal{J}_k(w,\tau_k,\lambda_k)$
+            \STATE Update model parameter:
+            \[
+            w_k^{t,e+1}
+            =
+            w_k^{t,e}
+            -
+            \eta_w
+            \nabla_w
+            \mathcal{J}_k
+            \]
+            \STATE Update personalized threshold:
+            \[
+            \tau_k^{t,e+1}
+            =
+            \Pi_{[\tau_{\min},\tau_{\max}]}
+            \left[
+            \tau_k^{t,e}
+            -
+            \eta_\tau
+            \nabla_{\tau_k}
+            \mathcal{J}_k
+            \right]
+            \]
+        \ENDFOR
+        \STATE Set $w_k^{t+1}=w_k^{t,E}$ and $\tau_k^{t+1}=\tau_k^{t,E}$
+        \STATE Update dual variable:
+        \[
+        \lambda_k^{t+1}
+        =
+        \left[
+        \lambda_k^t
+        +
+        \eta_\lambda
+        (
+        \widetilde{FPR}_k^{t+1}
+        -
+        \epsilon_k
+        )
+        \right]_+
+        \]
+        \STATE Upload $w_k^{t+1}$, $\tau_k^{t+1}$, $\widetilde{FPR}_k^{t+1}$, $\widetilde{FNR}_k^{t+1}$, and $\Delta w_k^t$ to the server
+    \ENDFOR
+    \STATE Server computes reliability score $q_k^t$ for each client
+    \STATE Server computes risk-reliable aggregation weight $\omega_k^t$
+    \STATE Server updates global model:
+    \[
+    w^{t+1}
+    =
+    \sum_{k\in\mathcal{K}_t}
+    \omega_k^t w_k^{t+1}
+    \]
+\ENDFOR
+\RETURN $w^T$ and $\{\tau_k^T\}_{k=1}^{K}$
+\end{algorithmic}
+\end{algorithm}
+3.6.4 复杂度分析
+RC-FAD 在传统联邦训练流程的基础上主要增加三类开销：可导 FPR/FNR 统计、客户端阈值更新以及服务端风险可靠性聚合权重计算。客户端侧计算可导 FPR/FNR 需要对本地样本异常分数进行统计，复杂度为 (O(n_k))；阈值 (\tau_k) 是一维变量，其更新开销远小于模型参数更新。服务端侧需要计算客户端更新可靠性，其复杂度与模型聚合处于同一量级。通信方面，RC-FAD 仅额外上传少量标量风险信息，包括 (\tau_k)、(\widetilde{FPR}_k)、(\widetilde{FNR}_k) 等，相比模型参数通信量可以忽略。详细复杂度分析见附录 F。
+
+3.7 理论分析
+本节从理论角度分析 RC-FAD 的合理性。首先给出基本假设，然后给出客户端个性化阈值必要性、动态少数类增强单调性、平均误报约束违背界和非凸收敛性结果。详细证明见附录 A–E。
+3.7.1 基本假设
+记客户端 (k) 的联合优化变量为
+[
+u_k=(w,\tau_k).
+]
+客户端 (k) 的本地约束目标为
+[
+\mathcal{J}_k(u_k,\lambda_k)
+\mathcal{L}_{risk}^k(w,\tau_k)
++
+\mu\widetilde{FNR}_k(w,\tau_k)
++
+\lambda_k
+[
+\widetilde{FPR}k(w,\tau_k)-\epsilon_k
+]+.
+]
+本文采用以下标准假设。
+假设 1：平滑性。
+对于任意客户端 (k)，本地目标函数 (\mathcal{J}_k(u_k,\lambda_k)) 关于 (u_k) 是 (L)-平滑的：
+[
+|\nabla \mathcal{J}_k(u,\lambda_k)-\nabla \mathcal{J}_k(v,\lambda_k)|
+\leq
+L|u-v|.
+]
+假设 2：随机梯度方差有界。
+客户端随机梯度 (g_k(u)) 满足
+[
+\mathbb{E}[g_k(u)]
+\nabla \mathcal{J}_k(u,\lambda_k),
+]
+且
+[
+\mathbb{E}
+|g_k(u)-\nabla \mathcal{J}_k(u,\lambda_k)|^2
+\leq
+\sigma^2.
+]
+假设 3：客户端异构性有界。
+[
+\frac{1}{K}
+\sum_{k=1}^{K}
+|
+\nabla \mathcal{J}_k(u_k,\lambda_k)
+\nabla \Phi(u)
+|^2
+\leq
+\sigma_h^2,
+]
+其中 (\sigma_h^2) 表示客户端异构性程度。
+假设 4：阈值与风险代理函数有界。
+[
+\tau_k\in[\tau_{\min},\tau_{\max}],
+]
+且
+[
+0\leq \widetilde{FPR}_k(w,\tau_k)\leq 1,
+\quad
+0\leq \widetilde{FNR}_k(w,\tau_k)\leq 1.
+]
+假设 5：聚合权重有界。
+[
+0\leq \omega_k^t\leq \omega_{\max},
+\quad
+\sum_{k\in\mathcal{K}_t}\omega_k^t=1.
+]
+3.7.2 客户端个性化阈值必要性
+命题 3.1：异构风险分布下个性化阈值的必要性。
+在联邦风险敏感异常检测中，若不同客户端的正常样本异常分数分布存在差异，则满足所有客户端低误报约束的统一阈值至少需要达到各客户端约束分位数的最大值：
+[
+\tau
+\geq
+\max_{k}
+Q_{k,0}(1-\epsilon_k).
+]
+当不同客户端的 (Q_{k,0}(1-\epsilon_k)) 差异较大时，统一阈值会受到最严格客户端主导，从而可能导致其他客户端异常样本更难超过阈值，增加漏报风险。
+该命题说明，客户端个性化阈值并非简单的工程调节，而是联邦异构风险分布下的必要设计。证明见附录 A。
+3.7.3 动态少数类增强单调性
+命题 3.2：动态少数类增强因子的风险单调性。
+当 (a_1,a_2,a_3>0) 且 (\beta_{\max}>\beta_{\min}>0) 时，动态少数类增强因子 (\beta_k^t) 满足：
+[
+\frac{\partial \beta_k^t}{\partial r_k^t}<0,
+\quad
+\frac{\partial \beta_k^t}{\partial \widetilde{FNR}_k^t}>0,
+\quad
+\frac{\partial \beta_k^t}
+{\partial [\widetilde{FPR}k^t-\epsilon_k]+}<0.
+]
+该命题说明，异常样本比例越低，增强强度越大；漏报风险越高，增强强度越大；误报超限越严重，增强强度越小。因此，(\beta_k^t) 是符合低误报约束逻辑的动态风险调节因子。证明见附录 B。
+3.7.4 平均误报约束违背界
+定义第 (t) 轮客户端 (k) 的误报约束违背量为
+[
+c_k^t
+[
+\widetilde{FPR}k(w^t,\tau_k^t)-\epsilon_k
+]+.
+]
+定理 3.1：平均低误报约束违背界。
+在假设 1–5 成立的条件下，若学习率选择适当，则 RC-FAD 在 (T) 轮通信后的平均误报约束违背满足：
+[
+\frac{1}{T}
+\sum_{t=0}^{T-1}
+\mathbb{E}
+\left[
+\widetilde{FPR}k(w^t,\tau_k^t)-\epsilon_k
+\right]+
+\leq
+O\left(\frac{1}{\sqrt{T}}\right)
++
+O(\sigma_h^2)
++
+O(E^2\eta_w^2).
+]
+其中，(\sigma_h^2) 表示客户端异构性程度，(E) 表示本地更新步数，(\eta_w) 表示模型参数学习率。
+该定理表明，随着通信轮数 (T) 增加，RC-FAD 的平均误报约束违背会下降；同时，客户端异构性和本地多步训练会增加误报约束控制难度。证明见附录 D。
+3.7.5 非凸收敛性分析
+记联合变量为
+[
+U^t=(w^t,\tau_1^t,\dots,\tau_K^t).
+]
+全局目标函数为
+[
+\Phi(U^t)
+\sum_{k=1}^{K}
+\pi_k
+\left[
+\mathcal{L}_{risk}^k(w^t,\tau_k^t)
++
+\mu\widetilde{FNR}_k(w^t,\tau_k^t)
+\right].
+]
+定理 3.2：RC-FAD 的非凸收敛性。
+在假设 1–5 成立的条件下，若学习率满足
+[
+\eta_w=O\left(\frac{1}{\sqrt{T}}\right),
+\quad
+\eta_\tau=O\left(\frac{1}{\sqrt{T}}\right),
+]
+则 RC-FAD 在 (T) 轮通信后的平均一阶稳定性满足：
+[
+\frac{1}{T}
+\sum_{t=0}^{T-1}
+\mathbb{E}
+\left[
+|\nabla_w \Phi(U^t)|^2
++
+\sum_{k=1}^{K}
+|\nabla_{\tau_k}\Phi(U^t)|^2
+\right]
+\leq
+O\left(\frac{1}{\sqrt{KT}}\right)
++
+O(\sigma_h^2)
++
+O(E^2\eta_w^2).
+]
+该定理表明，RC-FAD 在非凸联邦优化场景下能够收敛到近似一阶稳定点。随着客户端数量和通信轮数增加，主优化误差项逐渐减小；而客户端异构性和本地多步更新会带来额外误差。证明见附录 E。
+
+3.8 本章小结
+本章提出了一种可导低误报约束下的联邦个性化风险优化方法 RC-FAD，用于解决风险敏感异常检测任务中误报约束严格、异常样本稀缺以及客户端数据分布异构等问题。
+首先，本章将风险敏感异常检测建模为带有客户端个性化可学习阈值的低误报约束优化问题。通过构造可导误报率和可导漏报率，本文将客户端级低误报需求从训练后的评价指标转化为训练过程中的显式约束，使模型能够在优化过程中直接感知误报风险。
+其次，本章提出客户端个性化阈值联合学习机制。不同于全局统一阈值或训练后阈值校准，RC-FAD 将客户端阈值 (\tau_k) 作为本地可学习变量，并在每轮本地训练中与模型参数 (w) 联合更新，使不同客户端能够根据自身风险分布形成个性化决策边界。
+再次，本章设计了风险状态驱动的动态少数类增强机制。该机制根据客户端异常样本比例、当前漏报风险和误报超限状态自适应调整异常类损失权重，从而在增强异常样本学习的同时避免破坏低误报约束。
+此外，本章提出误报约束驱动的风险可靠性聚合机制。服务端在聚合过程中综合考虑客户端数据规模、漏报风险、误报超限程度和更新可靠性，避免高误报或更新不稳定客户端对全局模型产生过大影响，从而提高全局训练过程的风险稳定性。
+最后，本章从理论角度分析了 RC-FAD 的关键性质。理论结果表明，客户端个性化阈值在异构风险分布下具有必要性，动态少数类增强因子满足风险单调性，且 RC-FAD 在一定条件下能够降低平均误报约束违背，并收敛到非凸优化问题的近似一阶稳定点。
+综上，RC-FAD 通过
+[
+\text{可导低误报约束}
++
+\text{客户端个性化阈值联合学习}
++
+\text{动态少数类增强}
++
+\text{风险可靠性聚合}
+]
+构建了一个面向风险敏感异常检测的联邦个性化风险优化框架，为后续实验验证提供了方法基础。
+
+附录 A 客户端个性化阈值必要性证明
+本附录证明命题 3.1。考虑客户端 (k) 上正常样本的异常分数随机变量
+[
+S_{k,0}=s_w(X_k|y=0).
+]
+客户端 (k) 的误报率可写为
+[
+FPR_k(w,\tau)
+P(S_{k,0}\geq \tau).
+]
+若要求客户端 (k) 满足低误报约束
+[
+FPR_k(w,\tau)\leq \epsilon_k,
+]
+则有
+[
+P(S_{k,0}\geq \tau)\leq \epsilon_k.
+]
+等价地，
+[
+P(S_{k,0}<\tau)\geq 1-\epsilon_k.
+]
+设 (Q_{k,0}(1-\epsilon_k)) 表示客户端 (k) 上正常样本异常分数分布的 ((1-\epsilon_k))-分位数，则为了满足上述条件，阈值至少需要满足
+[
+\tau\geq Q_{k,0}(1-\epsilon_k).
+]
+若所有客户端共享统一阈值 (\tau)，则该阈值必须同时满足所有客户端的误报约束，即
+[
+\tau\geq Q_{k,0}(1-\epsilon_k),
+\quad k=1,\dots,K.
+]
+因此，
+[
+\tau
+\geq
+\max_k Q_{k,0}(1-\epsilon_k).
+]
+这说明统一阈值会被所有客户端中约束分位数最大的客户端主导。当不同客户端的正常样本异常分数分布差异较大时，统一阈值可能远高于部分客户端自身所需阈值，从而导致这些客户端的异常样本更难超过阈值，增加漏报风险。
+因此，在联邦异构风险分布下，客户端个性化阈值是必要的。命题 3.1 得证。
+
+附录 B 动态少数类增强因子的单调性证明
+本附录证明命题 3.2。动态少数类增强因子定义为
+[
+\beta_k^t
+\beta_{\min}
++
+(\beta_{\max}-\beta_{\min})
+\sigma
+\left(
+a_1(1-r_k^t)
++
+a_2\widetilde{FNR}_k^t
+a_3v_k^t
+\right),
+]
+其中
+[
+v_k^t=[\widetilde{FPR}k^t-\epsilon_k]+.
+]
+记
+[
+z_k^t
+a_1(1-r_k^t)
++
+a_2\widetilde{FNR}_k^t
+a_3v_k^t.
+]
+则
+[
+\beta_k^t
+\beta_{\min}
++
+(\beta_{\max}-\beta_{\min})
+\sigma(z_k^t).
+]
+由于 Sigmoid 函数满足
+[
+\sigma'(z)=\sigma(z)(1-\sigma(z))>0,
+]
+且
+[
+a_1,a_2,a_3>0,
+\quad
+\beta_{\max}>\beta_{\min}>0,
+]
+因此有
+[
+\frac{\partial \beta_k^t}{\partial r_k^t}
+(\beta_{\max}-\beta_{\min})
+\sigma'(z_k^t)
+\frac{\partial z_k^t}{\partial r_k^t}.
+]
+又因为
+[
+\frac{\partial z_k^t}{\partial r_k^t}
+-a_1,
+]
+所以
+[
+\frac{\partial \beta_k^t}{\partial r_k^t}
+-(\beta_{\max}-\beta_{\min})
+a_1\sigma'(z_k^t)
+<0.
+]
+同理，
+[
+\frac{\partial z_k^t}{\partial \widetilde{FNR}_k^t}
+a_2,
+]
+因此
+[
+\frac{\partial \beta_k^t}{\partial \widetilde{FNR}_k^t}
+(\beta_{\max}-\beta_{\min})
+a_2\sigma'(z_k^t)
+0.
+]
+对于误报约束违背项 (v_k^t)，有
+[
+\frac{\partial z_k^t}{\partial v_k^t}
+-a_3,
+]
+因此
+[
+\frac{\partial \beta_k^t}{\partial v_k^t}
+-(\beta_{\max}-\beta_{\min})
+a_3\sigma'(z_k^t)
+<0.
+]
+由于
+[
+v_k^t=[\widetilde{FPR}k^t-\epsilon_k]+,
+]
+因此可得
+[
+\frac{\partial \beta_k^t}
+{\partial [\widetilde{FPR}k^t-\epsilon_k]+}
+<0.
+]
+综上，
+[
+\frac{\partial \beta_k^t}{\partial r_k^t}<0,
+\quad
+\frac{\partial \beta_k^t}{\partial \widetilde{FNR}_k^t}>0,
+\quad
+\frac{\partial \beta_k^t}
+{\partial [\widetilde{FPR}k^t-\epsilon_k]+}<0.
+]
+命题 3.2 得证。
+
+附录 C 风险可靠性聚合权重性质证明
+本附录证明风险可靠性聚合权重的基本性质。客户端 (k) 的未归一化聚合得分为
+[
+a_k^t
+n_k
+(1+\gamma_1\widetilde{FNR}_k^t)
+\exp
+\left(
+-\gamma_2[\widetilde{FPR}k^t-\epsilon_k]+
+\right)
+q_k^t.
+]
+由于
+[
+n_k>0,
+]
+[
+1+\gamma_1\widetilde{FNR}_k^t>0,
+]
+[
+\exp
+\left(
+-\gamma_2[\widetilde{FPR}k^t-\epsilon_k]+
+\right)>0,
+]
+且
+[
+q_k^t>0,
+]
+因此
+[
+a_k^t>0.
+]
+归一化权重定义为
+[
+\omega_k^t
+\frac{a_k^t}{\sum_{j\in\mathcal{K}_t}a_j^t}.
+]
+由于分子和分母均为正，因此
+[
+\omega_k^t\geq0.
+]
+同时，
+[
+\sum_{k\in\mathcal{K}_t}\omega_k^t
+\sum_{k\in\mathcal{K}t}
+\frac{a_k^t}{\sum{j\in\mathcal{K}_t}a_j^t}
+\frac{
+\sum_{k\in\mathcal{K}t}a_k^t
+}{
+\sum{j\in\mathcal{K}_t}a_j^t
+}
+1.
+]
+因此，聚合权重满足非负性和归一性。
+接下来证明误报超限抑制性。考虑两个客户端 (a) 和 (b)，假设二者具有相同的数据规模、漏报率和更新可靠性：
+[
+n_a=n_b,
+\quad
+\widetilde{FNR}_a^t=\widetilde{FNR}_b^t,
+\quad
+q_a^t=q_b^t.
+]
+若客户端 (a) 的误报超限程度更大：
+[
+[\widetilde{FPR}a^t-\epsilon_a]+
+[\widetilde{FPR}b^t-\epsilon_b]+,
+]
+由于指数函数 (\exp(-\gamma_2 x)) 关于 (x) 单调递减，且 (\gamma_2>0)，因此有
+[
+\exp
+\left(
+-\gamma_2[\widetilde{FPR}a^t-\epsilon_a]+
+\right)
+<
+\exp
+\left(
+-\gamma_2[\widetilde{FPR}b^t-\epsilon_b]+
+\right).
+]
+进而
+[
+a_a^t<a_b^t.
+]
+在归一化分母相同的情况下，有
+[
+\omega_a^t<\omega_b^t.
+]
+因此，误报超限越严重的客户端，其聚合权重越小。
+类似地，若两个客户端在数据规模、误报超限程度和可靠性上相同，但客户端 (a) 的漏报率更高：
+[
+\widetilde{FNR}_a^t>\widetilde{FNR}_b^t,
+]
+则
+[
+1+\gamma_1\widetilde{FNR}_a^t
+1+\gamma_1\widetilde{FNR}_b^t,
+]
+因此
+[
+a_a^t>a_b^t,
+\quad
+\omega_a^t>\omega_b^t.
+]
+这说明漏报风险较高的客户端能够获得更大聚合关注。
+最后，由于
+[
+q_k^t
+\exp
+\left(
+-\rho
+\frac{
+|\Delta w_k^t-\overline{\Delta w}^{t}|_2
+}{
+|\overline{\Delta w}^{t}|_2+\delta
+}
+\right),
+]
+当客户端更新偏离整体更新方向更远时，
+[
+|\Delta w_k^t-\overline{\Delta w}^{t}|_2
+]
+增大，导致 (q_k^t) 减小，从而降低聚合权重。聚合权重性质得证。
+
+附录 D 平均低误报约束违背界证明
+本附录给出定理 3.1 的证明思路。定义客户端 (k) 在第 (t) 轮的约束函数为
+[
+g_k^t
+\widetilde{FPR}_k(w^t,\tau_k^t)-\epsilon_k.
+]
+误报约束违背量为
+[
+c_k^t=[g_k^t]_+.
+]
+RC-FAD 采用拉格朗日乘子更新：
+[
+\lambda_k^{t+1}
+\left[
+\lambda_k^t+\eta_\lambda g_k^t
+\right]_+.
+]
+由投影非扩张性可得
+[
+(\lambda_k^{t+1})^2
+\leq
+(\lambda_k^t+\eta_\lambda g_k^t)^2.
+]
+展开得
+[
+(\lambda_k^{t+1})^2
+\leq
+(\lambda_k^t)^2
++
+2\eta_\lambda \lambda_k^t g_k^t
++
+\eta_\lambda^2 (g_k^t)^2.
+]
+整理可得
+[
+\lambda_k^t g_k^t
+\geq
+\frac{
+(\lambda_k^{t+1})^2-(\lambda_k^t)^2
+}{
+2\eta_\lambda
+}
+\frac{\eta_\lambda}{2}(g_k^t)^2.
+]
+由于 (\widetilde{FPR}_k\in[0,1])，且 (\epsilon_k\in[0,1])，因此 (g_k^t) 有界，即存在常数 (G_c>0)，使得
+[
+|g_k^t|\leq G_c.
+]
+于是
+[
+\lambda_k^t g_k^t
+\geq
+\frac{
+(\lambda_k^{t+1})^2-(\lambda_k^t)^2
+}{
+2\eta_\lambda
+}
+\frac{\eta_\lambda}{2}G_c^2.
+]
+另一方面，由本地目标函数的 (L)-平滑性可得每轮本地更新的期望下降关系：
+[
+\mathbb{E}
+[
+\mathcal{J}_k(u_k^{t+1},\lambda_k^t)
+]
+\leq
+\mathcal{J}_k(u_k^t,\lambda_k^t)
+\frac{\eta}{2}
+\mathbb{E}
+|\nabla \mathcal{J}_k(u_k^t,\lambda_k^t)|^2
++
+O(\eta^2\sigma^2)
++
+O(E^2\eta_w^2)
++
+O(\sigma_h^2).
+]
+其中，(O(\eta^2\sigma^2)) 来自随机梯度方差，(O(E^2\eta_w^2)) 来自本地多步更新导致的客户端漂移，(O(\sigma_h^2)) 来自客户端异构性。
+对 (t=0,\dots,T-1) 求和并利用望远镜求和，可得平均约束违背项受到如下形式控制：
+[
+\frac{1}{T}
+\sum_{t=0}^{T-1}
+\mathbb{E}
+[c_k^t]
+\leq
+O\left(\frac{1}{T\eta_\lambda}\right)
++
+O(\eta_\lambda)
++
+O(\sigma_h^2)
++
+O(E^2\eta_w^2).
+]
+令
+[
+\eta_\lambda=O\left(\frac{1}{\sqrt{T}}\right),
+]
+可得
+[
+\frac{1}{T}
+\sum_{t=0}^{T-1}
+\mathbb{E}
+[c_k^t]
+\leq
+O\left(\frac{1}{\sqrt{T}}\right)
++
+O(\sigma_h^2)
++
+O(E^2\eta_w^2).
+]
+即
+[
+\frac{1}{T}
+\sum_{t=0}^{T-1}
+\mathbb{E}
+\left[
+\widetilde{FPR}k(w^t,\tau_k^t)-\epsilon_k
+\right]+
+\leq
+O\left(\frac{1}{\sqrt{T}}\right)
++
+O(\sigma_h^2)
++
+O(E^2\eta_w^2).
+]
+定理 3.1 得证。
+
+附录 E 非凸收敛性证明
+本附录给出定理 3.2 的证明思路。记联合变量为
+[
+U^t=(w^t,\tau_1^t,\dots,\tau_K^t).
+]
+全局目标函数为
+[
+\Phi(U^t)
+\sum_{k=1}^{K}
+\pi_k
+\left[
+\mathcal{L}_{risk}^k(w^t,\tau_k^t)
++
+\mu\widetilde{FNR}_k(w^t,\tau_k^t)
+\right].
+]
+由 (L)-平滑性可得
+[
+\Phi(U^{t+1})
+\leq
+\Phi(U^t)
++
+\langle
+\nabla \Phi(U^t),
+U^{t+1}-U^t
+\rangle
++
+\frac{L}{2}
+|U^{t+1}-U^t|^2.
+]
+将联邦更新写成随机梯度下降形式，可得
+[
+U^{t+1}
+U^t
+\eta G^t
++
+\Delta_t,
+]
+其中 (G^t) 表示聚合后的随机梯度估计，(\Delta_t) 表示由本地多步训练和客户端异构性带来的偏差项。代入上式并取期望，有
+[
+\mathbb{E}[\Phi(U^{t+1})]
+\leq
+\mathbb{E}[\Phi(U^t)]
+\eta
+\mathbb{E}
+|\nabla \Phi(U^t)|^2
++
+O(\eta^2\sigma^2)
++
+O(\eta\sigma_h^2)
++
+O(\eta E^2\eta_w^2).
+]
+对 (t=0,\dots,T-1) 求和，得到
+[
+\eta
+\sum_{t=0}^{T-1}
+\mathbb{E}
+|\nabla \Phi(U^t)|^2
+\leq
+\Phi(U^0)-\Phi^*
++
+O(T\eta^2\sigma^2)
++
+O(T\eta\sigma_h^2)
++
+O(T\eta E^2\eta_w^2).
+]
+两边同时除以 (T\eta)，得到
+[
+\frac{1}{T}
+\sum_{t=0}^{T-1}
+\mathbb{E}
+|\nabla \Phi(U^t)|^2
+\leq
+O\left(\frac{1}{T\eta}\right)
++
+O(\eta\sigma^2)
++
+O(\sigma_h^2)
++
+O(E^2\eta_w^2).
+]
+在联邦随机优化中，若考虑 (K) 个客户端并行参与带来的方差降低，则随机梯度方差项可写为
+[
+O\left(\frac{\eta\sigma^2}{K}\right).
+]
+令
+[
+\eta=O\left(\frac{1}{\sqrt{KT}}\right),
+]
+则可得
+[
+\frac{1}{T}
+\sum_{t=0}^{T-1}
+\mathbb{E}
+|\nabla \Phi(U^t)|^2
+\leq
+O\left(\frac{1}{\sqrt{KT}}\right)
++
+O(\sigma_h^2)
++
+O(E^2\eta_w^2).
+]
+由于联合变量 (U^t) 包含模型参数 (w^t) 和客户端阈值 ({\tau_k^t})，因此梯度范数可以展开为
+[
+|\nabla \Phi(U^t)|^2
+|\nabla_w \Phi(U^t)|^2
++
+\sum_{k=1}^{K}
+|\nabla_{\tau_k}\Phi(U^t)|^2.
+]
+因此得到
+[
+\frac{1}{T}
+\sum_{t=0}^{T-1}
+\mathbb{E}
+\left[
+|\nabla_w \Phi(U^t)|^2
++
+\sum_{k=1}^{K}
+|\nabla_{\tau_k}\Phi(U^t)|^2
+\right]
+\leq
+O\left(\frac{1}{\sqrt{KT}}\right)
++
+O(\sigma_h^2)
++
+O(E^2\eta_w^2).
+]
+定理 3.2 得证。
+
+附录 F 计算复杂度与通信复杂度分析
+本附录分析 RC-FAD 相比标准 FedAvg 额外引入的计算和通信开销。
+F.1 客户端计算复杂度
+客户端侧主要额外计算包括可导 FPR/FNR 统计、动态少数类增强因子计算和个性化阈值更新。
+首先，计算可导误报率和漏报率需要对本地样本异常分数进行统计。对于客户端 (k)，其本地样本数为 (n_k)，因此该部分复杂度为
+[
+O(n_k).
+]
+其次，动态少数类增强因子 (\beta_k^t) 由少量标量风险状态计算得到，其计算复杂度为
+[
+O(1).
+]
+再次，个性化阈值 (\tau_k) 是一维变量，其梯度更新复杂度远小于模型参数更新。若模型参数维度为 (d)，本地神经网络训练主要复杂度通常与 (d) 和本地批次数有关，而阈值更新只引入标量级额外开销。因此，客户端侧额外计算开销可以近似表示为
+[
+O(n_k)+O(1).
+]
+与本地模型训练相比，该部分开销较低。
+F.2 服务端计算复杂度
+服务端侧主要额外计算为更新可靠性因子和风险可靠性聚合权重。设第 (t) 轮参与训练的客户端数量为 (|\mathcal{K}_t|)，模型参数维度为 (d)。计算客户端更新量
+[
+\Delta w_k^t=w_k^{t+1}-w^t
+]
+以及平均更新方向
+[
+\overline{\Delta w}^{t}
+\frac{1}{|\mathcal{K}t|}
+\sum{k\in\mathcal{K}_t}
+\Delta w_k^t
+]
+的复杂度为
+[
+O(|\mathcal{K}_t|d).
+]
+计算更新可靠性因子 (q_k^t) 也需要计算更新差异范数，因此复杂度同样为
+[
+O(|\mathcal{K}_t|d).
+]
+聚合权重中的误报率、漏报率和数据量均为标量，计算复杂度为
+[
+O(|\mathcal{K}_t|).
+]
+因此，服务端侧额外复杂度主要为
+[
+O(|\mathcal{K}_t|d),
+]
+与标准模型聚合处于同一量级。
+F.3 通信复杂度
+标准 FedAvg 中，每个客户端需要上传本地模型参数，通信复杂度为
+[
+O(d).
+]
+RC-FAD 除上传模型参数外，还需要上传少量标量信息，包括：
+[
+\tau_k,
+\quad
+\widetilde{FPR}_k,
+\quad
+\widetilde{FNR}_k,
+\quad
+\lambda_k,
+\quad
+\beta_k^t.
+]
+这些信息均为标量，因此每个客户端额外通信复杂度为
+[
+O(1).
+]
+因此，RC-FAD 每轮通信复杂度为
+[
+O(d)+O(1),
+]
+与标准 FedAvg 相比几乎不增加通信负担。
+综上，RC-FAD 在保持标准联邦学习通信结构的基础上，仅增加轻量级风险状态统计、阈值更新和风险可靠性聚合计算。其额外计算和通信成本较低，适合应用于多客户端异构风险敏感异常检测场景。

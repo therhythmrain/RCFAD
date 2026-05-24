@@ -1,0 +1,35 @@
+# Python/cache
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE/local agent state
+.idea/
+.vscode/
+.codex/
+.agents/
+
+# Data, generated outputs, and model artifacts
+data/
+outputs/
+final_model.pt
+*.pt
+*.pth
+*.ckpt
+
+# Experiment/runtime scratch
+tmp-pip/
+wandb/
+*.log
+
+# OS/editor files
+.DS_Store
+Thumbs.db
