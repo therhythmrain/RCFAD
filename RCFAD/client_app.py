@@ -128,7 +128,8 @@ def train(msg: Message, context: Context):
         float(_cfg(run_cfg, "lambda-init", 1.0)),
     )
 
-    lr = float(msg.content["config"]["lr"])
+    train_config = msg.content["config"] if "config" in msg.content else {}
+    lr = float(_cfg(train_config, "lr", _cfg(run_cfg, "learning-rate", 0.001)))
     global_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
     global_ref = None
     previous_ref = None
@@ -179,6 +180,7 @@ def train(msg: Message, context: Context):
         loss_type=str(_cfg(run_cfg, "loss-type", "bce")),
         focal_gamma=float(_cfg(run_cfg, "focal-gamma", 2.0)),
         focal_alpha=float(_cfg(run_cfg, "focal-alpha", -1.0)),
+        class_balanced_beta=float(_cfg(run_cfg, "class-balanced-beta", 0.9999)),
         fedprox_mu=float(_cfg(run_cfg, "fedprox-mu", 0.0)),
         global_params=global_state if float(_cfg(run_cfg, "fedprox-mu", 0.0)) > 0.0 else None,
         moon_mu=float(_cfg(run_cfg, "moon-mu", 0.0)),

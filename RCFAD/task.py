@@ -17,7 +17,11 @@ from __future__ import annotations
 
 import os
 import random
+import re
+import ssl
+import time
 import urllib.request
+import xml.etree.ElementTree as ET
 import zipfile
 
 # Set deterministic/CUDA-related environment variables before torch is used.
@@ -41,6 +45,7 @@ from torchvision.transforms import Compose, Grayscale, Normalize, Resize, ToTens
 # Ray/Flower simulation stability settings are configured above before torch use.
 
 TABULAR_INPUT_DIM = 600
+TABULAR_CACHE_VERSION = 3
 
 
 def set_seed(seed: int, deterministic: bool = True) -> None:
@@ -247,7 +252,8 @@ def _load_base_dataset(dataset_name: str, train: bool, data_root: str) -> Datase
 
     raise ValueError(
         f"Unsupported dataset_name={dataset_name!r}. "
-        "Use cifar10, mnist, fmnist, creditcard, baf, ai4i, or secom."
+        "Use cifar10, mnist, fmnist, creditcard, baf, ai4i, secom, swat, hai, "
+        "smd, paysim, mammography, annthyroid, shuttle, or tep."
     )
 
 
@@ -269,21 +275,79 @@ def _normalize_dataset_key(dataset_name: str) -> str:
         "ai4i2020": "ai4i",
         "predictivemaintenance": "ai4i",
         "secom": "secom",
+        "swat": "swat",
+        "securewatertreatment": "swat",
+        "hai": "hai",
+        "haicon": "hai",
+        "smd": "smd",
+        "servermachinedataset": "smd",
+        "paysim": "paysim",
+        "paysim1": "paysim",
+        "mobilemoneyfraud": "paysim",
+        "mammography": "mammography",
+        "oddsmammography": "mammography",
+        "annthyroid": "annthyroid",
+        "oddsannthyroid": "annthyroid",
+        "thyroid": "annthyroid",
+        "shuttle": "shuttle",
+        "oddsshuttle": "shuttle",
+        "tep": "tep",
+        "tennesseeeastman": "tep",
+        "tennesseeeastmanprocess": "tep",
     }
     return aliases.get(name, name)
 
 
 def _is_tabular_dataset(dataset_name: str) -> bool:
-    return _normalize_dataset_key(dataset_name) in {"creditcard", "baf", "ai4i", "secom"}
+    return _normalize_dataset_key(dataset_name) in {
+        "creditcard",
+        "baf",
+        "ai4i",
+        "secom",
+        "swat",
+        "hai",
+        "smd",
+        "paysim",
+        "mammography",
+        "annthyroid",
+        "shuttle",
+        "tep",
+    }
+
+
+def _urlretrieve_with_ssl_fallback(url: str, path: str) -> None:
+    try:
+        urllib.request.urlretrieve(url, path)
+        return
+    except Exception as exc:
+        if "CERTIFICATE_VERIFY_FAILED" not in str(exc):
+            raise
+    context = ssl._create_unverified_context()
+    with urllib.request.urlopen(url, context=context) as response, open(path, "wb") as f:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
 
 
 def _download_and_extract_zip(url: str, zip_path: str, extract_dir: str) -> None:
     os.makedirs(os.path.dirname(zip_path), exist_ok=True)
     os.makedirs(extract_dir, exist_ok=True)
     print(f"Downloading {url} to {zip_path} ...")
-    urllib.request.urlretrieve(url, zip_path)
+    _urlretrieve_with_ssl_fallback(url, zip_path)
     with zipfile.ZipFile(zip_path) as zf:
         zf.extractall(extract_dir)
+
+
+def _download_file(url: str, path: str) -> str:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path) and os.path.getsize(path) <= 0:
+        os.remove(path)
+    if not os.path.exists(path):
+        print(f"Downloading {url} to {path} ...")
+        _urlretrieve_with_ssl_fallback(url, path)
+    return path
 
 
 def _first_existing_path(paths: Iterable[str]) -> str | None:
@@ -300,7 +364,22 @@ def _find_first_csv(root: str, keywords: Iterable[str]) -> str | None:
     for dirpath, _, filenames in os.walk(root):
         for filename in filenames:
             lower = filename.lower()
-            if lower.endswith(".csv") and all(key in lower for key in keys):
+            if lower.endswith((".csv", ".csv.gz")) and all(key in lower for key in keys):
+                return os.path.join(dirpath, filename)
+    return None
+
+
+def _find_first_file(root: str, suffixes: Iterable[str], keywords: Iterable[str] = ()) -> str | None:
+    suffix_list = tuple(suffix.lower() for suffix in suffixes)
+    keys = [key.lower() for key in keywords]
+    if not os.path.exists(root):
+        return None
+    for dirpath, _, filenames in os.walk(root):
+        for filename in filenames:
+            lower = filename.lower()
+            if suffix_list and not lower.endswith(suffix_list):
+                continue
+            if all(key in lower for key in keys):
                 return os.path.join(dirpath, filename)
     return None
 
@@ -426,6 +505,104 @@ def _ensure_secom_files(data_root: str) -> Tuple[str, str]:
     raise FileNotFoundError(f"SECOM archive extracted, but expected files were not found under {extract_dir}.")
 
 
+def _ensure_adbench_npz(data_root: str, key: str) -> str:
+    root = os.path.abspath(data_root)
+    urls = {
+        "mammography": "https://raw.githubusercontent.com/Minqi824/ADBench/main/adbench/datasets/Classical/23_mammography.npz",
+        "annthyroid": "https://raw.githubusercontent.com/Minqi824/ADBench/main/adbench/datasets/Classical/2_annthyroid.npz",
+        "shuttle": "https://raw.githubusercontent.com/Minqi824/ADBench/main/adbench/datasets/Classical/32_shuttle.npz",
+    }
+    filenames = {
+        "mammography": "23_mammography.npz",
+        "annthyroid": "2_annthyroid.npz",
+        "shuttle": "32_shuttle.npz",
+    }
+    candidates = [
+        os.path.join(root, key, filenames[key]),
+        os.path.join(root, key, f"{key}.npz"),
+        os.path.join(root, filenames[key]),
+        os.path.join(root, f"{key}.npz"),
+    ]
+    found = _first_existing_path(candidates)
+    if found is not None:
+        return found
+    found = _find_first_file(os.path.join(root, key), (".npz",), (key,))
+    if found is not None:
+        return found
+    return _download_file(urls[key], os.path.join(root, key, filenames[key]))
+
+
+def _load_adbench_npz_arrays(data_root: str, key: str) -> Tuple[np.ndarray, np.ndarray]:
+    npz_path = _ensure_adbench_npz(data_root, key)
+    data = np.load(npz_path, allow_pickle=True)
+    keys = set(data.files)
+    feature_key = "X" if "X" in keys else "x" if "x" in keys else "data" if "data" in keys else ""
+    label_key = "y" if "y" in keys else "Y" if "Y" in keys else "label" if "label" in keys else "labels" if "labels" in keys else ""
+    if not feature_key or not label_key:
+        raise ValueError(f"Unsupported ADBench npz layout in {npz_path}: keys={data.files}")
+    features = np.asarray(data[feature_key], dtype=np.float32)
+    labels = np.asarray(data[label_key]).reshape(-1)
+    labels = (labels > 0).astype(np.float32)
+    if features.ndim != 2 or len(features) != len(labels):
+        raise ValueError(
+            f"Invalid ADBench arrays in {npz_path}: features={features.shape}, labels={labels.shape}"
+        )
+    return features, labels
+
+
+def _ensure_paysim_csv(data_root: str) -> str:
+    root = os.path.abspath(data_root)
+    candidates = [
+        os.path.join(root, "paysim", "PS_20174392719_1491204439457_log.csv"),
+        os.path.join(root, "paysim", "paysim.csv"),
+        os.path.join(root, "paysim.csv"),
+    ]
+    found = _first_existing_path(candidates)
+    if found is not None:
+        return found
+    found = _find_first_csv(os.path.join(root, "paysim"), [])
+    if found is not None:
+        return found
+    raise FileNotFoundError(
+        "PaySim dataset not found. Download PaySim from Kaggle and place the "
+        "CSV under data/paysim/PS_20174392719_1491204439457_log.csv or data/paysim.csv."
+    )
+
+
+def _ensure_timeseries_csv(data_root: str, key: str) -> str:
+    root = os.path.abspath(data_root)
+    candidates = [
+        os.path.join(root, key, f"{key}.csv"),
+        os.path.join(root, key, f"{key.upper()}.csv"),
+        os.path.join(root, f"{key}.csv"),
+        os.path.join(root, f"{key.upper()}.csv"),
+    ]
+    if key == "swat":
+        candidates.extend([
+            os.path.join(root, "swat", "merged.csv"),
+            os.path.join(root, "swat", "attack.csv"),
+            os.path.join(root, "swat", "SWaT_Dataset_Attack_v0.csv"),
+            os.path.join(root, "swat", "SWaT_Dataset_Normal_v1.csv"),
+            os.path.join(root, "SWaT_Dataset_Attack_v0.csv"),
+        ])
+    if key == "hai":
+        candidates.extend([
+            os.path.join(root, "hai", "train.csv"),
+            os.path.join(root, "hai", "test.csv"),
+            os.path.join(root, "hai", "HAI.csv"),
+        ])
+    found = _first_existing_path(candidates)
+    if found is not None:
+        return found
+    found = _find_first_csv(os.path.join(root, key), [])
+    if found is not None:
+        return found
+    raise FileNotFoundError(
+        f"{key.upper()} dataset not found. Place a CSV under data/{key}/ with "
+        "a label column such as label, attack, anomaly, is_anomaly, or attack_label."
+    )
+
+
 def _dataframe_to_features(
     df: pd.DataFrame,
     *,
@@ -458,6 +635,301 @@ def _dataframe_to_features(
     medians = feature_df.median(numeric_only=True)
     feature_df = feature_df.fillna(medians).fillna(0.0)
     return feature_df.astype(np.float32).to_numpy(), labels
+
+
+def _find_label_column(df: pd.DataFrame) -> str:
+    candidates = [
+        "label",
+        "attack",
+        "anomaly",
+        "is_anomaly",
+        "isattack",
+        "is_attack",
+        "attack_label",
+        "normal/attack",
+        "normal_attack",
+        "class",
+        "target",
+    ]
+    lower_to_col = {str(col).strip().lower(): col for col in df.columns}
+    for name in candidates:
+        if name in lower_to_col:
+            return lower_to_col[name]
+    raise ValueError(f"No label column found. Expected one of {candidates}. Columns: {list(df.columns)[:30]}")
+
+
+def _labels_from_series(series: pd.Series) -> np.ndarray:
+    normal_values = {"0", "normal", "benign", "false", "no", "none"}
+    return series.map(lambda value: 0.0 if str(value).strip().lower() in normal_values else 1.0).to_numpy(dtype=np.float32)
+
+
+def _load_timeseries_csv_arrays(data_root: str, key: str) -> Tuple[np.ndarray, np.ndarray]:
+    if key == "hai":
+        hai_root = os.path.join(os.path.abspath(data_root), "hai")
+        paths = []
+        for dirpath, _, filenames in os.walk(hai_root):
+            for filename in sorted(filenames):
+                lower = filename.lower()
+                if lower.endswith((".csv", ".csv.gz")):
+                    paths.append(os.path.join(dirpath, filename))
+        if not paths:
+            paths = [_ensure_timeseries_csv(data_root, key)]
+        frames = [pd.read_csv(path, sep=None, engine="python") for path in sorted(paths)]
+        df = pd.concat(frames, ignore_index=True)
+    else:
+        csv_path = _ensure_timeseries_csv(data_root, key)
+        df = pd.read_csv(csv_path, sep=None, engine="python")
+    df.columns = [str(col).strip() for col in df.columns]
+    label_col = _find_label_column(df)
+    labels = _labels_from_series(df[label_col])
+    drops = [label_col]
+    for col in ("timestamp", "time", "date", "datetime"):
+        if col in {c.lower() for c in df.columns}:
+            drops.append(col)
+    features, _ = _dataframe_to_features(df, label_col=label_col, positive_values=(1,), drop_cols=drops)
+    return features, labels
+
+
+def _ensure_tep_files(data_root: str) -> Tuple[List[str], List[str]]:
+    root = os.path.abspath(data_root)
+    tep_root = os.path.join(root, "tep")
+    normal_candidates = [
+        os.path.join(tep_root, "mode1_normal_50.xlsx"),
+        os.path.join(tep_root, "normal.xlsx"),
+        os.path.join(tep_root, "normal.csv"),
+    ]
+    fault_candidates = [
+        os.path.join(tep_root, "mode1_1_1.xlsx"),
+        os.path.join(tep_root, "mode1_2_1.xlsx"),
+    ]
+
+    normal_path = _first_existing_path(normal_candidates)
+    if normal_path is None:
+        normal_path = _download_file(
+            "https://github.com/mv-per/tennessee-eastman-dataset/raw/main/simulations/mode_1/mode1_normal_50.xlsx",
+            normal_candidates[0],
+        )
+
+    existing_faults = [path for path in fault_candidates if os.path.exists(path)]
+    if not existing_faults:
+        fault_urls = [
+            "https://github.com/mv-per/tennessee-eastman-dataset/raw/main/simulations/mode_1/faults/mode1_1_1.xlsx",
+            "https://github.com/mv-per/tennessee-eastman-dataset/raw/main/simulations/mode_1/faults/mode1_2_1.xlsx",
+        ]
+        existing_faults = [
+            _download_file(url, path)
+            for url, path in zip(fault_urls, fault_candidates)
+        ]
+
+    extra_faults = []
+    for dirpath, _, filenames in os.walk(tep_root):
+        for filename in filenames:
+            lower = filename.lower()
+            path = os.path.join(dirpath, filename)
+            if path == normal_path or path in existing_faults:
+                continue
+            if lower.endswith((".xlsx", ".xls", ".csv")) and ("fault" in lower or "mode1_" in lower):
+                extra_faults.append(path)
+    fault_paths = sorted(set(existing_faults + extra_faults))
+    if not fault_paths:
+        raise FileNotFoundError(
+            "TEP fault files not found. Place fault xlsx/csv files under data/tep/ "
+            "or allow automatic download from mv-per/tennessee-eastman-dataset."
+        )
+    return [normal_path], fault_paths
+
+
+def _read_tep_table(path: str) -> pd.DataFrame:
+    lower = path.lower()
+    if lower.endswith(".csv"):
+        df = pd.read_csv(path, sep=None, engine="python")
+    else:
+        try:
+            df = pd.read_excel(path)
+        except ImportError:
+            df = _read_xlsx_table_stdlib(path)
+    df.columns = [str(col).strip() for col in df.columns]
+    return df
+
+
+def _xlsx_col_index(cell_ref: str) -> int:
+    match = re.match(r"([A-Z]+)", cell_ref.upper())
+    if not match:
+        return 0
+    idx = 0
+    for char in match.group(1):
+        idx = idx * 26 + (ord(char) - ord("A") + 1)
+    return idx - 1
+
+
+def _read_xlsx_table_stdlib(path: str) -> pd.DataFrame:
+    ns = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with zipfile.ZipFile(path) as zf:
+        shared: List[str] = []
+        if "xl/sharedStrings.xml" in zf.namelist():
+            root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+            for item in root.findall("main:si", ns):
+                texts = [node.text or "" for node in item.findall(".//main:t", ns)]
+                shared.append("".join(texts))
+
+        sheet_names = [name for name in zf.namelist() if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")]
+        if not sheet_names:
+            raise ValueError(f"No worksheets found in {path}")
+        root = ET.fromstring(zf.read(sorted(sheet_names)[0]))
+
+    rows: List[List[Any]] = []
+    for row in root.findall(".//main:sheetData/main:row", ns):
+        values: List[Any] = []
+        for cell in row.findall("main:c", ns):
+            col_idx = _xlsx_col_index(cell.attrib.get("r", "A1"))
+            while len(values) <= col_idx:
+                values.append("")
+            cell_type = cell.attrib.get("t", "")
+            value_node = cell.find("main:v", ns)
+            inline_node = cell.find("main:is/main:t", ns)
+            raw = ""
+            if value_node is not None and value_node.text is not None:
+                raw = value_node.text
+            elif inline_node is not None and inline_node.text is not None:
+                raw = inline_node.text
+            if cell_type == "s" and raw:
+                raw = shared[int(raw)]
+            values[col_idx] = raw
+        rows.append(values)
+
+    if not rows:
+        raise ValueError(f"Worksheet is empty: {path}")
+    width = max(len(row) for row in rows)
+    padded = [row + [""] * (width - len(row)) for row in rows]
+    header = [str(value).strip() or f"col_{idx}" for idx, value in enumerate(padded[0])]
+    df = pd.DataFrame(padded[1:], columns=header)
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="ignore")
+    return df
+
+
+def _load_tep_arrays(data_root: str) -> Tuple[np.ndarray, np.ndarray]:
+    root = os.path.abspath(data_root)
+    labelled_csv = _find_first_csv(os.path.join(root, "tep"), ["tep"])
+    if labelled_csv is not None:
+        df = pd.read_csv(labelled_csv, sep=None, engine="python")
+        df.columns = [str(col).strip() for col in df.columns]
+        try:
+            label_col = _find_label_column(df)
+        except ValueError:
+            label_col = ""
+        if label_col:
+            labels = _labels_from_series(df[label_col])
+            features, _ = _dataframe_to_features(df, label_col=label_col, positive_values=(1,))
+            return features, labels
+
+    normal_paths, fault_paths = _ensure_tep_files(data_root)
+    frames: List[pd.DataFrame] = []
+    for path in normal_paths:
+        df = _read_tep_table(path)
+        df["__rcfad_label__"] = 0
+        frames.append(df)
+    for path in fault_paths:
+        df = _read_tep_table(path)
+        df["__rcfad_label__"] = 1
+        frames.append(df)
+    combined = pd.concat(frames, ignore_index=True)
+    features, labels = _dataframe_to_features(
+        combined,
+        label_col="__rcfad_label__",
+        positive_values=(1,),
+        drop_cols=("time", "timestamp", "datetime", "date", "sample", "simulationRun"),
+    )
+    return features, labels
+
+
+def _read_smd_matrix(path: str) -> np.ndarray:
+    lower = path.lower()
+    if lower.endswith(".npy"):
+        arr = np.load(path)
+    else:
+        try:
+            arr = pd.read_csv(path, header=None).to_numpy()
+        except Exception:
+            arr = pd.read_csv(path, sep=r"\s+", header=None).to_numpy()
+    arr = np.asarray(arr, dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr.reshape(-1, 1)
+    return arr
+
+
+def _ensure_smd_files(data_root: str) -> Tuple[str, str, str | None]:
+    root = os.path.abspath(data_root)
+    smd_root = os.path.join(root, "smd")
+    train_candidates = [
+        os.path.join(smd_root, "train", "machine-1-1.txt"),
+        os.path.join(smd_root, "train", "machine-1-1.csv"),
+        os.path.join(smd_root, "train.csv"),
+        os.path.join(root, "SMD", "train", "machine-1-1.txt"),
+    ]
+    test_candidates = [
+        os.path.join(smd_root, "test", "machine-1-1.txt"),
+        os.path.join(smd_root, "test", "machine-1-1.csv"),
+        os.path.join(smd_root, "test.csv"),
+        os.path.join(root, "SMD", "test", "machine-1-1.txt"),
+    ]
+    label_candidates = [
+        os.path.join(smd_root, "test_label", "machine-1-1.txt"),
+        os.path.join(smd_root, "test_label", "machine-1-1.csv"),
+        os.path.join(smd_root, "test_label.csv"),
+        os.path.join(root, "SMD", "test_label", "machine-1-1.txt"),
+    ]
+    train_path = _first_existing_path(train_candidates) or _find_first_file(os.path.join(smd_root, "train"), (".txt", ".csv", ".npy"))
+    test_path = _first_existing_path(test_candidates) or _find_first_file(os.path.join(smd_root, "test"), (".txt", ".csv", ".npy"))
+    label_path = _first_existing_path(label_candidates) or _find_first_file(os.path.join(smd_root, "test_label"), (".txt", ".csv", ".npy"))
+    if train_path is not None and test_path is not None:
+        return train_path, test_path, label_path
+    csv_path = _find_first_csv(smd_root, [])
+    if csv_path is not None:
+        return csv_path, csv_path, None
+    raise FileNotFoundError(
+        "SMD dataset not found. Place files under data/smd/train, data/smd/test, "
+        "and data/smd/test_label, or provide a labelled CSV under data/smd/."
+    )
+
+
+def _window_timeseries(features: np.ndarray, labels: np.ndarray, window_size: int = 10, stride: int = 5) -> Tuple[np.ndarray, np.ndarray]:
+    features = np.asarray(features, dtype=np.float32)
+    labels = np.asarray(labels, dtype=np.float32)
+    if len(features) != len(labels):
+        min_len = min(len(features), len(labels))
+        features = features[:min_len]
+        labels = labels[:min_len]
+    if len(features) < window_size:
+        return features, labels
+    xs: List[np.ndarray] = []
+    ys: List[float] = []
+    for start in range(0, len(features) - window_size + 1, stride):
+        end = start + window_size
+        xs.append(features[start:end].reshape(-1))
+        ys.append(float(labels[start:end].max()))
+    return np.stack(xs).astype(np.float32), np.asarray(ys, dtype=np.float32)
+
+
+def _load_smd_arrays(data_root: str) -> Tuple[np.ndarray, np.ndarray]:
+    train_path, test_path, label_path = _ensure_smd_files(data_root)
+    if label_path is None and train_path == test_path and train_path.lower().endswith(".csv"):
+        df = pd.read_csv(train_path)
+        label_col = _find_label_column(df)
+        labels = _labels_from_series(df[label_col])
+        features, _ = _dataframe_to_features(df, label_col=label_col, positive_values=(1,))
+        return _window_timeseries(features, labels)
+    train_x = _read_smd_matrix(train_path)
+    test_x = _read_smd_matrix(test_path)
+    train_y = np.zeros(len(train_x), dtype=np.float32)
+    if label_path is None:
+        test_y = np.zeros(len(test_x), dtype=np.float32)
+    else:
+        test_y = _read_smd_matrix(label_path).reshape(-1).astype(np.float32)
+        test_y = (test_y > 0).astype(np.float32)
+    x = np.concatenate([train_x, test_x], axis=0)
+    y = np.concatenate([train_y, test_y], axis=0)
+    return _window_timeseries(x, y)
 
 
 def _split_standardize_tabular(
@@ -494,15 +966,119 @@ def _split_standardize_tabular(
     return x_train.astype(np.float32), y_train, x_test.astype(np.float32), y_test
 
 
-@lru_cache(maxsize=16)
-def _load_tabular_arrays(
-    dataset_name: str,
+def _max_rows_for_dataset(key: str) -> int:
+    if key != "paysim":
+        return 0
+    value = os.environ.get("RCFAD_PAYSIM_MAX_ROWS", "100000").strip()
+    try:
+        return max(0, int(value))
+    except ValueError:
+        return 100000
+
+
+def _stratified_row_cap(
+    features: np.ndarray,
+    labels: np.ndarray,
+    max_rows: int,
+    seed: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    max_rows = int(max_rows)
+    if max_rows <= 0 or len(labels) <= max_rows:
+        return features, labels
+    rng = np.random.default_rng(int(seed))
+    labels = labels.astype(np.float32, copy=False)
+    pos_idx = np.where(labels == 1)[0]
+    neg_idx = np.where(labels == 0)[0]
+    pos_target = max(1, int(round(max_rows * len(pos_idx) / len(labels)))) if len(pos_idx) else 0
+    neg_target = max_rows - pos_target
+    pos_keep = rng.choice(pos_idx, size=min(pos_target, len(pos_idx)), replace=False) if len(pos_idx) else np.array([], dtype=int)
+    neg_keep = rng.choice(neg_idx, size=min(neg_target, len(neg_idx)), replace=False) if len(neg_idx) else np.array([], dtype=int)
+    keep = rng.permutation(np.concatenate([pos_keep, neg_keep]))
+    return features[keep], labels[keep]
+
+
+def _tabular_cache_dir(data_root: str, key: str, seed: int) -> str:
+    suffix = ""
+    max_rows = _max_rows_for_dataset(key)
+    if max_rows > 0:
+        suffix = f"_cap{max_rows}"
+    return os.path.join(
+        os.path.abspath(data_root),
+        ".rcfad_cache",
+        f"{key}_seed{int(seed)}_v{TABULAR_CACHE_VERSION}{suffix}",
+    )
+
+
+def _tabular_cache_paths(data_root: str, key: str, seed: int) -> dict[str, str]:
+    cache_dir = _tabular_cache_dir(data_root, key, seed)
+    return {
+        "dir": cache_dir,
+        "lock": f"{cache_dir}.lock",
+        "ready": os.path.join(cache_dir, "READY"),
+        "x_train": os.path.join(cache_dir, "x_train.npy"),
+        "y_train": os.path.join(cache_dir, "y_train.npy"),
+        "x_test": os.path.join(cache_dir, "x_test.npy"),
+        "y_test": os.path.join(cache_dir, "y_test.npy"),
+    }
+
+
+def _load_tabular_cache(data_root: str, key: str, seed: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    paths = _tabular_cache_paths(data_root, key, seed)
+    required = ("ready", "x_train", "y_train", "x_test", "y_test")
+    if not all(os.path.exists(paths[name]) for name in required):
+        return None
+    return (
+        np.load(paths["x_train"], mmap_mode="r"),
+        np.load(paths["y_train"], mmap_mode="r"),
+        np.load(paths["x_test"], mmap_mode="r"),
+        np.load(paths["y_test"], mmap_mode="r"),
+    )
+
+
+def _write_tabular_cache(
+    data_root: str,
+    key: str,
+    seed: int,
+    arrays: Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+) -> None:
+    paths = _tabular_cache_paths(data_root, key, seed)
+    os.makedirs(paths["dir"], exist_ok=True)
+    for name, array in zip(("x_train", "y_train", "x_test", "y_test"), arrays):
+        tmp_path = f"{paths[name]}.tmp.{os.getpid()}"
+        with open(tmp_path, "wb") as f:
+            np.save(f, np.asarray(array))
+        os.replace(tmp_path, paths[name])
+    with open(paths["ready"], "w", encoding="utf-8") as f:
+        f.write("ok\n")
+
+
+def _acquire_tabular_cache_lock(data_root: str, key: str, seed: int, timeout: float = 3600.0) -> str:
+    paths = _tabular_cache_paths(data_root, key, seed)
+    os.makedirs(os.path.dirname(paths["lock"]), exist_ok=True)
+    start = time.time()
+    while True:
+        try:
+            fd = os.open(paths["lock"], os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(f"pid={os.getpid()}\n")
+            return paths["lock"]
+        except FileExistsError:
+            if _load_tabular_cache(data_root, key, seed) is not None:
+                return ""
+            if time.time() - start > timeout:
+                try:
+                    os.remove(paths["lock"])
+                except OSError:
+                    pass
+                start = time.time()
+            time.sleep(2.0)
+
+
+def _build_tabular_arrays(
+    key: str,
     data_root: str,
     seed: int,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Load, encode, split, and normalize supported tabular anomaly datasets."""
-
-    key = _normalize_dataset_key(dataset_name)
     if key == "creditcard":
         csv_path = _ensure_creditcard_csv(data_root)
         df = pd.read_csv(csv_path)
@@ -533,10 +1109,80 @@ def _load_tabular_arrays(
         feature_df = feature_df.replace([np.inf, -np.inf], np.nan)
         feature_df = feature_df.fillna(feature_df.median(numeric_only=True)).fillna(0.0)
         features = feature_df.astype(np.float32).to_numpy()
+    elif key in {"mammography", "annthyroid", "shuttle"}:
+        features, labels = _load_adbench_npz_arrays(data_root, key)
+    elif key in {"swat", "hai"}:
+        features, labels = _load_timeseries_csv_arrays(data_root, key)
+        features, labels = _window_timeseries(features, labels)
+    elif key == "smd":
+        features, labels = _load_smd_arrays(data_root)
+    elif key == "tep":
+        features, labels = _load_tep_arrays(data_root)
+    elif key == "paysim":
+        csv_path = _ensure_paysim_csv(data_root)
+        df = pd.read_csv(
+            csv_path,
+            usecols=[
+                "step",
+                "type",
+                "amount",
+                "oldbalanceOrg",
+                "newbalanceOrig",
+                "oldbalanceDest",
+                "newbalanceDest",
+                "isFraud",
+            ],
+        )
+        features, labels = _dataframe_to_features(
+            df,
+            label_col="isFraud",
+            positive_values=(1, True, "true"),
+        )
+        features, labels = _stratified_row_cap(
+            features,
+            labels,
+            _max_rows_for_dataset(key),
+            int(seed),
+        )
     else:
-        raise ValueError(f"Unsupported tabular dataset {dataset_name!r}.")
+        raise ValueError(f"Unsupported tabular dataset {key!r}.")
 
     return _split_standardize_tabular(features, labels, int(seed))
+
+
+@lru_cache(maxsize=16)
+def _load_tabular_arrays(
+    dataset_name: str,
+    data_root: str,
+    seed: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Load, encode, split, and normalize supported tabular anomaly datasets.
+
+    Large tabular/time-series datasets are cached as ``.npy`` arrays and loaded
+    with mmap in each Flower/Ray client actor. This preserves the 10-client
+    experimental setting without forcing every actor to parse and hold a full
+    CSV/DataFrame copy in memory.
+    """
+
+    key = _normalize_dataset_key(dataset_name)
+    cached = _load_tabular_cache(data_root, key, int(seed))
+    if cached is not None:
+        return cached
+
+    lock_path = _acquire_tabular_cache_lock(data_root, key, int(seed))
+    try:
+        cached = _load_tabular_cache(data_root, key, int(seed))
+        if cached is not None:
+            return cached
+        arrays = _build_tabular_arrays(key, data_root, int(seed))
+        _write_tabular_cache(data_root, key, int(seed), arrays)
+        return _load_tabular_cache(data_root, key, int(seed)) or arrays
+    finally:
+        if lock_path:
+            try:
+                os.remove(lock_path)
+            except OSError:
+                pass
 
 
 def _load_tabular_dataset(data_root: str, dataset_name: str, seed: int, train: bool) -> TabularAnomalyDataset:
@@ -1003,6 +1649,7 @@ def train(
     loss_type: str = "bce",
     focal_gamma: float = 2.0,
     focal_alpha: float = -1.0,
+    class_balanced_beta: float = 0.9999,
     fedprox_mu: float = 0.0,
     global_params: Dict[str, torch.Tensor] | None = None,
     moon_mu: float = 0.0,
@@ -1073,6 +1720,19 @@ def train(
     beta_k = float(beta_min + (beta_max - beta_min) * beta_logit)
     beta_k = float(np.clip(beta_k, beta_min, beta_max))
 
+    dataset_size = max(1, int(len(trainloader.dataset)))
+    pos_count = max(1.0, local_ratio * dataset_size)
+    neg_count = max(1.0, (1.0 - local_ratio) * dataset_size)
+    cb_beta = float(np.clip(class_balanced_beta, 0.0, 0.999999))
+    if cb_beta > 0.0:
+        pos_cb = (1.0 - cb_beta) / max(1.0 - cb_beta ** pos_count, 1e-12)
+        neg_cb = (1.0 - cb_beta) / max(1.0 - cb_beta ** neg_count, 1e-12)
+    else:
+        pos_cb = neg_cb = 1.0
+    cb_norm = max(pos_cb + neg_cb, 1e-12)
+    pos_cb_weight = float(2.0 * pos_cb / cb_norm)
+    neg_cb_weight = float(2.0 * neg_cb / cb_norm)
+
     tau = nn.Parameter(torch.tensor(float(threshold), dtype=torch.float32, device=device))
     optimizer = torch.optim.SGD(
         [
@@ -1103,6 +1763,15 @@ def train(
                 positive_weight = float(c_fn) * (1.0 + (beta_k - 1.0) * hard_positive_gate)
             pos_loss = labels * F.softplus(-logits) * positive_weight
             neg_loss = (1.0 - labels) * F.softplus(logits) * c_fp
+            if str(loss_type).lower() in {
+                "class_balanced",
+                "class-balanced",
+                "cb",
+                "cbloss",
+                "class_balanced_loss",
+            }:
+                pos_loss = pos_loss * pos_cb_weight
+                neg_loss = neg_loss * neg_cb_weight
             sample_loss = pos_loss + neg_loss
             if str(loss_type).lower() == "focal":
                 p_t = labels * probs + (1.0 - labels) * (1.0 - probs)

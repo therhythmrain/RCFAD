@@ -92,6 +92,7 @@ update-reliability-delta = 1e-12
 loss-type = "bce"
 focal-gamma = 2.0
 focal-alpha = -1.0
+class-balanced-beta = 0.9999
 fedprox-mu = 0.0
 moon-mu = 0.0
 moon-temperature = 0.5
