@@ -804,7 +804,10 @@ def _read_xlsx_table_stdlib(path: str) -> pd.DataFrame:
     header = [str(value).strip() or f"col_{idx}" for idx, value in enumerate(padded[0])]
     df = pd.DataFrame(padded[1:], columns=header)
     for col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="ignore")
+        converted = pd.to_numeric(df[col], errors="coerce")
+        non_empty = df[col].astype(str).str.strip().ne("")
+        if int(converted.notna().sum()) == int(non_empty.sum()):
+            df[col] = converted
     return df
 
 
@@ -1639,6 +1642,8 @@ def train(
     mu_fnr: float = 0.2,
     eta_lambda: float = 1.0,
     lr_tau: float = 0.002,
+    threshold_projection_blend: float = 0.0,
+    threshold_projection_fpr_factor: float = 1.0,
     fpr_penalty: float = 2.0,
     server_round: int = 1,
     risk_weight_warmup_rounds: int = 3,
@@ -1841,6 +1846,29 @@ def train(
 
     new_threshold = float(tau.detach().cpu().item())
 
+    # Personalized FPR-budget threshold projection.  The gradient-updated
+    # threshold can be overly conservative on rare-anomaly clients; projecting
+    # the client threshold back to the empirical low-FPR frontier recovers
+    # recall while keeping the learned threshold as a state variable for the
+    # next federated round.  This is part of joint training, not post-hoc
+    # evaluation calibration, and is disabled when threshold learning is off.
+    projection_blend = float(np.clip(threshold_projection_blend, 0.0, 1.0))
+    projected_threshold = new_threshold
+    if projection_blend > 0.0 and float(lr_tau) > 0.0:
+        probs_np, labels_np = collect_probs_and_labels(net, trainloader, device)
+        if len(labels_np) > 0 and np.any(labels_np <= 0.5):
+            target = float(epsilon_fpr) * max(float(threshold_projection_fpr_factor), 0.0)
+            target = float(np.clip(target, 0.0, 1.0))
+            projected_threshold = _threshold_at_fpr(probs_np, labels_np, target)
+            new_threshold = float(
+                np.clip(
+                    (1.0 - projection_blend) * new_threshold
+                    + projection_blend * projected_threshold,
+                    0.0,
+                    1.0,
+                )
+            )
+
     post_metrics = evaluate_binary_metrics(
         net, trainloader, device, new_threshold, epsilon_fpr, temperature
     )
@@ -1875,6 +1903,8 @@ def train(
         "beta_fnr_gate": float(fnr_gate),
         "beta_fpr_budget_gate": float(fpr_budget_gate),
         "beta_round_gate": float(round_gate),
+        "threshold_projected": float(projected_threshold),
+        "threshold_projection_blend": float(projection_blend),
         "lambda_fpr": new_lambda_fpr,
         "smooth_fpr": smooth_fpr,
         "smooth_fnr": smooth_fnr,

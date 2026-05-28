@@ -21,6 +21,7 @@ packages = ["."]
 
 [tool.flwr.app]
 publisher = "flwrlabs"
+fab-include = ["RCFAD/**", "pyproject.toml"]
 
 [tool.flwr.app.components]
 serverapp = "RCFAD.server_app:app"
@@ -75,6 +76,8 @@ beta-round-decay = 0.0
 mu-fnr = 0.05
 eta-lambda = 1.0
 lr-tau = 0.0002
+threshold-projection-blend = 0.0
+threshold-projection-fpr-factor = 1.0
 
 # Stable RC-FAD v2 settings
 lambda-init = 0.5
@@ -82,10 +85,17 @@ fpr-penalty = 1.0
 risk-weight-warmup-rounds = 3
 risk-gamma-fnr = 0.5
 risk-gamma-fpr = 2.0
+risk-aggregation-strength = 1.0
+risk-aggregation-source = "smooth"
+aggregation-guard = false
+aggregation-guard-metric = "auprc"
+aggregation-guard-margin = 0.0
+aggregation-guard-alphas = "0,0.25,0.5,0.75,1.0"
 risk-weight-min-factor = 0.5
 risk-weight-max-factor = 2.0
 update-reliability-rho = 1.0
 update-reliability-floor = 0.0
+update-reliability-strength = 1.0
 update-reliability-delta = 1e-12
 
 # Baseline and diagnostic options

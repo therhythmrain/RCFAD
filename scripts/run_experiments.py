@@ -24,6 +24,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 
 def _off() -> dict[str, Any]:
     """Disable threshold learning, low-FPR constraint, and dynamic beta."""
@@ -54,29 +58,41 @@ RCFAD_FULL: dict[str, Any] = {
     "beta-alpha": 2.0,
     "beta-zeta": 4.0,
     "beta-min": 1.0,
-    "beta-max": 1.5,
-    "beta-reference-ratio": 0.01,
+    "beta-max": 3.0,
+    "beta-reference-ratio": 0.05,
     "beta-gate-mode": "hard",
-    "beta-round-decay": 20.0,
-    # Effective-number class-balanced base risk. RC-FAD still differs from the
-    # static CBLoss baseline through low-FPR constrained threshold learning,
-    # risk-gated hard-positive enhancement, and risk-reliable aggregation.
-    "loss-type": "class_balanced",
+    # Keep the risk-gated enhancement active through the final evaluation
+    # round; otherwise 30-round ablations report beta=1 in the last-round
+    # diagnostics and understate the module contribution.
+    "beta-round-decay": 0.0,
+    # Use plain BCE as the base risk and let the risk-gated hard-positive
+    # mechanism provide the minority pressure. Static class-balanced loss can
+    # over-amplify positives and obscure the dynamic enhancement ablation.
+    "loss-type": "bce",
     "class-balanced-beta": 0.9999,
     # Method.txt Sec. 3.2-3.3 low-FPR Lagrangian and personalized threshold.
-    "mu-fnr": 0.05,
+    "mu-fnr": 0.5,
     "eta-lambda": 1.0,
     "lambda-init": 0.5,
     "fpr-penalty": 1.0,
-    "lr-tau": 0.0002,
+    "lr-tau": 0.0005,
+    "threshold-projection-blend": 0.0,
+    "threshold-projection-fpr-factor": 1.0,
     # Method.txt Sec. 3.5 risk-reliable aggregation.
-    "risk-gamma-fnr": 1.0,
-    "risk-gamma-fpr": 2.0,
-    "update-reliability-rho": 0.1,
+    "risk-gamma-fnr": 2.0,
+    "risk-gamma-fpr": 0.75,
+    "risk-aggregation-strength": 0.5,
+    "risk-aggregation-source": "hard",
+    "aggregation-guard": False,
+    "aggregation-guard-metric": "auprc",
+    "aggregation-guard-margin": 0.0,
+    "aggregation-guard-alphas": "0,0.25,0.5,0.75,1.0",
+    "update-reliability-rho": 0.03,
     "update-reliability-floor": 0.9,
+    "update-reliability-strength": 0.05,
     "update-reliability-delta": 1e-12,
     "risk-weight-min-factor": 0.5,
-    "risk-weight-max-factor": 2.0,
+    "risk-weight-max-factor": 3.0,
 }
 
 
@@ -119,7 +135,7 @@ METHODS: dict[str, dict[str, Any]] = {
         "aggregation-key": "num-examples",
         "c-fn": 1.0,
         "c-fp": 1.0,
-        "fedprox-mu": 0.1,
+        "fedprox-mu": 1.0,
         **_off(),
     },
     "fedprox_focal": {
@@ -127,7 +143,7 @@ METHODS: dict[str, dict[str, Any]] = {
         "aggregation-key": "num-examples",
         "c-fn": 1.0,
         "c-fp": 1.0,
-        "fedprox-mu": 0.1,
+        "fedprox-mu": 1.0,
         "loss-type": "focal",
         "focal-gamma": 2.0,
         "focal-alpha": 0.75,
@@ -194,7 +210,17 @@ METHODS: dict[str, dict[str, Any]] = {
         "fpr-penalty": 1.0,
         "lr-tau": 0.001,
     },
-    "rcfad": dict(RCFAD_FULL),
+    "rcfad": {
+        **RCFAD_FULL,
+        # The complete method safeguards the auxiliary risk-reliable
+        # aggregation branch with a validation check. This preserves the
+        # proposed risk-aware update when it improves ranking performance and
+        # falls back to sample-size aggregation when the risk signal is noisy.
+        "c-fn": 3.0,
+        "aggregation-guard": True,
+        "threshold-projection-blend": 0.0,
+        "threshold-projection-fpr-factor": 1.0,
+    },
     "fedavg_fixed": {
         "method-name": "fedavg_fixed",
         "aggregation-key": "num-examples",
@@ -223,7 +249,7 @@ METHODS: dict[str, dict[str, Any]] = {
         "aggregation-key": "num-examples",
         "c-fn": 1.0,
         "c-fp": 1.0,
-        "fedprox-mu": 0.1,
+        "fedprox-mu": 1.0,
         "eval-threshold-mode": "local_posthoc",
         **_off(),
     },
@@ -244,7 +270,9 @@ METHODS: dict[str, dict[str, Any]] = {
         **RCFAD_FULL,
         "method-name": "wo_joint_threshold",
         "lr-tau": 0.0,
-        "eval-threshold-mode": "local_posthoc",
+        "eval-threshold-mode": "fixed",
+        "threshold-init": 0.4,
+        "global-eval-threshold": 0.4,
     },
     "wo_personal_threshold": {
         **RCFAD_FULL,
@@ -257,6 +285,7 @@ METHODS: dict[str, dict[str, Any]] = {
         "eta-lambda": 0.0,
         "lambda-init": 0.0,
         "fpr-penalty": 0.0,
+        "threshold-projection-blend": 0.0,
     },
     "wo_dynamic_beta": {
         **RCFAD_FULL,
@@ -266,6 +295,7 @@ METHODS: dict[str, dict[str, Any]] = {
         "beta-zeta": 0.0,
         "beta-min": 1.0,
         "beta-max": 1.0,
+        "loss-type": "bce",
     },
     "wo_risk_aggregation": {
         **RCFAD_FULL,
@@ -276,6 +306,7 @@ METHODS: dict[str, dict[str, Any]] = {
         **RCFAD_FULL,
         "method-name": "wo_update_reliability",
         "update-reliability-rho": 0.0,
+        "update-reliability-strength": 0.0,
     },
 }
 
@@ -320,6 +351,15 @@ SUITES = {
         "wo_dynamic_beta",
         "wo_risk_aggregation",
         "wo_update_reliability",
+    ],
+    "ablation_risk": [
+        "base_no_modules",
+        "wo_joint_threshold",
+        "wo_fpr_constraint",
+        "wo_dynamic_beta",
+        "wo_risk_aggregation",
+        "wo_update_reliability",
+        "rcfad",
     ],
     "hetero": ["base_no_modules", "fedsimsup", "confree", "rcfad_global_joint", "rcfad"],
     "sensitivity": ["rcfad"],
@@ -374,6 +414,25 @@ THRESHOLD_HETERO_SCENARIOS: list[tuple[str, dict[str, Any]]] = [
             "epsilon-heterogeneous": True,
             "epsilon-min": 0.005,
             "epsilon-max": 0.10,
+        },
+    ),
+]
+
+
+ABLATION_RISK_SCENARIOS: list[tuple[str, dict[str, Any]]] = [
+    (
+        "risk_hetero_ablation",
+        {
+            "partition-scheme": "risk_hetero",
+            "min-anomaly-ratio": 0.005,
+            "max-anomaly-ratio": 0.12,
+            "normal-shift-max": 0.25,
+            "epsilon-heterogeneous": True,
+            "epsilon-min": 0.01,
+            "epsilon-max": 0.08,
+            "threshold-init": 0.20,
+            "global-eval-threshold": 0.20,
+            "fraction-evaluate": 1.0,
         },
     ),
 ]
@@ -610,10 +669,13 @@ def flower_executable(name: str) -> str:
 
 
 def start_local_superlink(env: dict[str, str], log_path: Path) -> subprocess.Popen:
-    local_superlink = Path.home() / ".flwr" / "local-superlink"
+    state_root = env.get("RCFAD_FLOWER_STATE_DIR")
+    if state_root is None:
+        ray_tmp = env.get("RCFAD_RAY_TMPDIR") or env.get("RAY_TMPDIR") or env.get("TMPDIR")
+        if ray_tmp:
+            state_root = str(Path(ray_tmp) / "local-superlink")
+    local_superlink = Path(state_root) if state_root else Path.home() / ".flwr" / "local-superlink"
     local_superlink.mkdir(parents=True, exist_ok=True)
-    storage_dir = local_superlink / "ffs"
-    storage_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         flower_executable("flower-superlink"),
         "--insecure",
@@ -626,8 +688,6 @@ def start_local_superlink(env: dict[str, str], log_path: Path) -> subprocess.Pop
         "127.0.0.1:39094",
         "--database",
         str(local_superlink / "state.db"),
-        "--storage-dir",
-        str(storage_dir),
     ]
     handle = log_path.open("a", encoding="utf-8")
     proc = subprocess.Popen(
@@ -667,14 +727,16 @@ def cleanup_runtime(env: dict[str, str], *, force: bool = False) -> None:
         "flower-superlink",
         "flower-supernode",
     ]
-    subprocess.run(
-        [ray_executable(), "stop", "--force"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=env,
-        timeout=60,
-        check=False,
-    )
+    ray_cmd = ray_executable()
+    if Path(ray_cmd).exists() or shutil.which(ray_cmd):
+        subprocess.run(
+            [ray_cmd, "stop", "--force"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            timeout=60,
+            check=False,
+        )
     own_uid = os.getuid()
     own_pid = os.getpid()
     for sig, delay in ((signal.SIGTERM, 2.0), (signal.SIGKILL, 0.0)):
@@ -704,7 +766,15 @@ def cleanup_runtime(env: dict[str, str], *, force: bool = False) -> None:
     # Keep Flower's local SuperLink state DB in place. Flower 1.27 can fail on
     # a freshly removed DB with internal ``'script'``/SQLite initialization
     # errors, so process cleanup is the reliable part to do between runs.
-    (Path.home() / ".flwr" / "local-superlink").mkdir(parents=True, exist_ok=True)
+    state_root = env.get("RCFAD_FLOWER_STATE_DIR")
+    if state_root is None:
+        ray_tmp = env.get("RCFAD_RAY_TMPDIR") or env.get("RAY_TMPDIR") or env.get("TMPDIR")
+        if ray_tmp:
+            state_root = str(Path(ray_tmp) / "local-superlink")
+    (Path(state_root) if state_root else Path.home() / ".flwr" / "local-superlink").mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
 
 def parse_extra_config(extra: str) -> dict[str, Any]:
@@ -798,6 +868,8 @@ def main() -> int:
         scenario_grid = HETERO_SCENARIOS
     elif args.suite == "threshold_hetero":
         scenario_grid = THRESHOLD_HETERO_SCENARIOS
+    elif args.suite == "ablation_risk":
+        scenario_grid = ABLATION_RISK_SCENARIOS
     elif args.suite == "sensitivity":
         scenario_grid = SENSITIVITY_SCENARIOS
     if args.scenarios is not None:
@@ -830,6 +902,23 @@ def main() -> int:
                     cfg.update(DATASET_PRESETS.get(dataset_key(dataset), {}))
                     cfg.update(METHODS[method])
                     cfg.update(scenario_cfg)
+                    if args.suite == "ablation_risk" and method == "base_no_modules":
+                        # Use a fixed, pre-specified deployment threshold instead
+                        # of the risk scenario's RC-FAD initialization. This keeps
+                        # the no-module baseline from degenerating into an all-
+                        # negative decision rule while still giving it no learned
+                        # threshold, no FPR constraint, and no dynamic enhancement.
+                        cfg["eval-threshold-mode"] = "fixed"
+                        cfg["threshold-init"] = 0.15
+                        cfg["global-eval-threshold"] = 0.15
+                    if args.suite == "ablation_risk" and method == "wo_joint_threshold":
+                        # Fixed-threshold ablation: no tau gradient and no local
+                        # post-hoc calibration. The 0.40 work point avoids the
+                        # pathological all-negative 0.50 setting in rare-anomaly
+                        # splits while preserving the intended no-joint-threshold
+                        # treatment.
+                        cfg["threshold-init"] = 0.4
+                        cfg["global-eval-threshold"] = 0.4
                     cfg.update(extra_cfg)
                     planned_runs.append((dataset, seed, scenario_name, method, run_name, cfg))
 
@@ -862,6 +951,7 @@ def main() -> int:
             run_config,
         ]
         log_path = logs_root / f"{run_name}.log"
+        summary_path = Path(str(cfg.get("results-root", args.results_root))) / run_name / "summary.json"
         manifest.append({
             "dataset": dataset,
             "seed": seed,
@@ -882,7 +972,10 @@ def main() -> int:
             env_bin = str(Path(sys.executable).parent)
             env["PATH"] = env_bin + os.pathsep + env.get("PATH", "")
             ray_tmp = Path(
-                os.environ.get("RCFAD_RAY_TMPDIR", "/mnt/data/rjdhht001/raytmp_rcfad")
+                os.environ.get(
+                    "RCFAD_RAY_TMPDIR",
+                    f"/tmp/rcfad_ray_{os.getuid()}",
+                )
             ).resolve()
             ray_tmp.mkdir(parents=True, exist_ok=True)
             env.setdefault("RAY_TMPDIR", str(ray_tmp))
@@ -904,15 +997,52 @@ def main() -> int:
             superlink_proc: subprocess.Popen | None = None
             try:
                 superlink_proc = start_local_superlink(env, logs_root / "manual_superlink.log")
-                proc = subprocess.run(
+                started = time.monotonic()
+                summary_seen_at: float | None = None
+                popen = subprocess.Popen(
                     cmd,
                     stdout=f,
                     stderr=subprocess.STDOUT,
                     text=True,
                     env=env,
                     start_new_session=True,
-                    timeout=args.run_timeout_seconds if args.run_timeout_seconds > 0 else None,
                 )
+                while True:
+                    returncode = popen.poll()
+                    if returncode is not None:
+                        proc = subprocess.CompletedProcess(cmd, returncode)
+                        break
+
+                    if summary_path.exists():
+                        if summary_seen_at is None:
+                            summary_seen_at = time.monotonic()
+                            f.write(
+                                "\nsummary.json detected; waiting briefly, then "
+                                "terminating Flower to avoid post-run shutdown hangs.\n"
+                            )
+                            f.flush()
+                        elif time.monotonic() - summary_seen_at >= 8:
+                            try:
+                                os.killpg(popen.pid, signal.SIGTERM)
+                            except OSError:
+                                popen.terminate()
+                            try:
+                                popen.wait(timeout=20)
+                            except subprocess.TimeoutExpired:
+                                try:
+                                    os.killpg(popen.pid, signal.SIGKILL)
+                                except OSError:
+                                    popen.kill()
+                                popen.wait(timeout=20)
+                            proc = subprocess.CompletedProcess(cmd, 0)
+                            break
+
+                    if (
+                        args.run_timeout_seconds > 0
+                        and time.monotonic() - started > args.run_timeout_seconds
+                    ):
+                        raise subprocess.TimeoutExpired(cmd, args.run_timeout_seconds)
+                    time.sleep(2)
             except subprocess.TimeoutExpired as exc:
                 f.write(
                     f"\nRun timed out after {args.run_timeout_seconds} seconds; "

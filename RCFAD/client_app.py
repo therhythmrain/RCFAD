@@ -22,7 +22,7 @@ app = ClientApp()
 
 # Client-side state. In Flower simulation this usually persists within the
 # client process. It stores threshold and Lagrange multiplier for each client.
-CLIENT_STATE: dict[int, dict[str, Any]] = {}
+CLIENT_STATE: dict[tuple[str, int], dict[str, Any]] = {}
 
 
 def _cfg(config: Any, key: str, default: Any) -> Any:
@@ -49,13 +49,14 @@ def _device(config: Any) -> torch.device:
     return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-def _state_id(partition_id: int, run_cfg: Any) -> int:
+def _state_id(partition_id: int, run_cfg: Any) -> tuple[str, int]:
+    run_id = str(_cfg(run_cfg, "run-name", "default"))
     # For the global-joint threshold diagnostic, all partitions hosted by the
     # same client process share one threshold state. In simulation this is an
     # approximation of a server-wide global threshold.
     if str(_cfg(run_cfg, "threshold-scope", "client")).lower() == "global":
-        return -1
-    return int(partition_id)
+        return (run_id, -1)
+    return (run_id, int(partition_id))
 
 
 def _client_epsilon(run_cfg: Any, partition_id: int, num_partitions: int) -> float:
@@ -68,13 +69,13 @@ def _client_epsilon(run_cfg: Any, partition_id: int, num_partitions: int) -> flo
     return float(_cfg(run_cfg, "epsilon-fpr", 0.01))
 
 
-def _get_state(partition_id: int, threshold_init: float, lambda_init: float = 1.0) -> dict[str, Any]:
-    if partition_id not in CLIENT_STATE:
-        CLIENT_STATE[partition_id] = {
+def _get_state(state_id: tuple[str, int], threshold_init: float, lambda_init: float = 1.0) -> dict[str, Any]:
+    if state_id not in CLIENT_STATE:
+        CLIENT_STATE[state_id] = {
             "threshold": float(threshold_init),
             "lambda_fpr": float(lambda_init),
         }
-    return CLIENT_STATE[partition_id]
+    return CLIENT_STATE[state_id]
 
 
 @app.train()
@@ -170,6 +171,8 @@ def train(msg: Message, context: Context):
         mu_fnr=float(_cfg(run_cfg, "mu-fnr", 0.2)),
         eta_lambda=float(_cfg(run_cfg, "eta-lambda", 1.0)),
         lr_tau=float(_cfg(run_cfg, "lr-tau", 0.002)),
+        threshold_projection_blend=float(_cfg(run_cfg, "threshold-projection-blend", 0.0)),
+        threshold_projection_fpr_factor=float(_cfg(run_cfg, "threshold-projection-fpr-factor", 1.0)),
         fpr_penalty=float(_cfg(run_cfg, "fpr-penalty", 2.0)),
         server_round=server_round,
         risk_weight_warmup_rounds=int(_cfg(run_cfg, "risk-weight-warmup-rounds", 3)),
@@ -234,6 +237,8 @@ def train(msg: Message, context: Context):
         # Training metrics
         "train_loss": float(train_loss),
         "threshold": float(new_threshold),
+        "threshold_projected": float(risk_metrics.get("threshold_projected", new_threshold)),
+        "threshold_projection_blend": float(risk_metrics.get("threshold_projection_blend", 0.0)),
         "lambda_fpr": float(new_lambda_fpr),
         "beta": float(risk_metrics.get("beta", 1.0)),
         "beta_logit": float(risk_metrics.get("beta_logit", 0.0)),
@@ -341,6 +346,7 @@ def evaluate(msg: Message, context: Context):
         # Include risk_weight so evaluate aggregation still works if weighted_by_key=risk_weight
         "risk_weight": float(len(valloader.dataset)),
         "conflict_free": float(len(valloader.dataset)),
+        "client_id": float(partition_id),
         "eval_loss": float(eval_loss),
         "eval_acc": float(eval_metrics.get("accuracy", 0.0)),
         "accuracy": float(eval_metrics.get("accuracy", 0.0)),

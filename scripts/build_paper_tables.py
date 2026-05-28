@@ -12,6 +12,19 @@ from pathlib import Path
 from statistics import mean, stdev
 from typing import Any
 
+try:
+    from collect_results import (
+        aggregate_ablation_chosen_percent,
+        aggregate_ablation_diagnostics_percent,
+        read_ablation_chosen_runs,
+        read_summaries as read_collect_summaries,
+    )
+except Exception:
+    aggregate_ablation_chosen_percent = None
+    aggregate_ablation_diagnostics_percent = None
+    read_ablation_chosen_runs = None
+    read_collect_summaries = None
+
 
 COMPARE_METHODS = [
     "fedavg",
@@ -71,6 +84,14 @@ METRICS = [
     "auc",
     "auprc",
     "recall_at_fpr",
+    "accuracy",
+    "precision",
+    "recall",
+    "fpr",
+    "fnr",
+    "f1",
+    "fpr_violation",
+    "fpr_violation_flag",
     "fnr_at_fpr_threshold",
     "fpr_at_fpr_threshold",
     "f1_at_fpr_threshold",
@@ -119,6 +140,7 @@ def read_rows(root: Path) -> list[dict[str, Any]]:
             "method": str(cfg.get("method-name", "")),
             "seed": str(cfg.get("seed", "")),
             "rounds": str(cfg.get("num-server-rounds", "")),
+            "selected_round": str(selected.get("round", "")),
         }
         for metric in METRICS:
             row[metric] = _float(selected.get(metric))
@@ -325,6 +347,20 @@ def main() -> int:
         write_md(out / "table_ablation_delta_3seed.md", delta)
         write_csv(out / "duplicate_diagnostics_ablation.csv", dup)
         write_md(out / "duplicate_diagnostics_ablation.md", dup)
+        if (
+            read_collect_summaries is not None
+            and read_ablation_chosen_runs is not None
+            and aggregate_ablation_chosen_percent is not None
+            and aggregate_ablation_diagnostics_percent is not None
+        ):
+            summary_rows = read_collect_summaries(Path(args.ablation_root))
+            chosen_runs = read_ablation_chosen_runs(summary_rows)
+            chosen_table = aggregate_ablation_chosen_percent(chosen_runs)
+            diagnostics = aggregate_ablation_diagnostics_percent(chosen_runs)
+            write_csv(out / "table_ablation_chosen_percent_3seed.csv", chosen_table)
+            write_md(out / "table_ablation_chosen_percent_3seed.md", chosen_table)
+            write_csv(out / "table_ablation_diagnostics_percent_3seed.csv", diagnostics)
+            write_md(out / "table_ablation_diagnostics_percent_3seed.md", diagnostics)
 
     print(f"Wrote paper tables under {out}")
     return 0

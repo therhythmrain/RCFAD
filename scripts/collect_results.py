@@ -26,6 +26,26 @@ METRICS = [
     "loss",
 ]
 
+ABLATION_METHODS = [
+    "base_no_modules",
+    "wo_joint_threshold",
+    "wo_fpr_constraint",
+    "wo_dynamic_beta",
+    "wo_risk_aggregation",
+    "wo_update_reliability",
+    "rcfad",
+]
+
+DISPLAY = {
+    "base_no_modules": "FedAvg / No Modules",
+    "wo_joint_threshold": "RC-FAD w/o Joint Threshold",
+    "wo_fpr_constraint": "RC-FAD w/o Low-FPR Constraint",
+    "wo_dynamic_beta": "RC-FAD w/o Dynamic Enhancement",
+    "wo_risk_aggregation": "RC-FAD w/o Risk Aggregation",
+    "wo_update_reliability": "RC-FAD w/o Update Reliability",
+    "rcfad": "RC-FAD",
+}
+
 
 def _float(x: Any, default: float = float("nan")) -> float:
     try:
@@ -143,6 +163,168 @@ def _fmt_mean_std(vals: list[float]) -> str:
     return f"{mean(vals):.4f} ± {stdev(vals):.4f}"
 
 
+def _fmt_percent(vals: list[float]) -> str:
+    vals = [100.0 * v for v in vals if not math.isnan(v)]
+    if not vals:
+        return ""
+    if len(vals) == 1:
+        return f"{vals[0]:.2f}"
+    return f"{mean(vals):.2f} ± {stdev(vals):.2f}"
+
+
+def _std(vals: list[float]) -> float:
+    vals = [v for v in vals if not math.isnan(v)]
+    return stdev(vals) if len(vals) > 1 else 0.0
+
+
+def _mean_or(vals: list[float], fallback: float = float("nan")) -> float:
+    vals = [v for v in vals if not math.isnan(v)]
+    return mean(vals) if vals else fallback
+
+
+def _min_or(vals: list[float], fallback: float = float("nan")) -> float:
+    vals = [v for v in vals if not math.isnan(v)]
+    return min(vals) if vals else fallback
+
+
+def _select_detail_rows(path: Path, selected_round: Any, filename: str) -> list[dict[str, Any]]:
+    metrics_path = path / filename
+    if not metrics_path.exists():
+        return []
+    try:
+        with metrics_path.open(newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+    except Exception:
+        return []
+    if not rows:
+        return []
+    round_text = str(selected_round)
+    selected = [r for r in rows if str(r.get("round", "")) == round_text]
+    if selected:
+        return selected
+    last_round = rows[-1].get("round", "")
+    return [r for r in rows if str(r.get("round", "")) == str(last_round)]
+
+
+def _last_detail_rows(path: Path, filename: str) -> list[dict[str, Any]]:
+    metrics_path = path / filename
+    if not metrics_path.exists():
+        return []
+    try:
+        with metrics_path.open(newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+    except Exception:
+        return []
+    if not rows:
+        return []
+    last_round = rows[-1].get("round", "")
+    return [r for r in rows if str(r.get("round", "")) == str(last_round)]
+
+
+def read_ablation_chosen_runs(summary_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for summary in summary_rows:
+        method = str(summary.get("method", ""))
+        if method not in ABLATION_METHODS:
+            continue
+        run_dir = Path(str(summary.get("path", "")))
+        selected_round = summary.get("selected_round", "")
+        eval_rows = _select_detail_rows(run_dir, selected_round, "client_eval_detail_metrics.csv")
+        train_rows = _select_detail_rows(run_dir, selected_round, "client_train_detail_metrics.csv")
+
+        recall_vals = [_float(r.get("recall")) for r in eval_rows]
+        f1_vals = [_float(r.get("f1")) for r in eval_rows]
+        fpr_vals = [_float(r.get("fpr")) for r in eval_rows]
+        violation_vals = [_float(r.get("fpr_violation")) for r in eval_rows]
+        flag_vals = [_float(r.get("fpr_violation_flag")) for r in eval_rows]
+        threshold_vals = [_float(r.get("threshold")) for r in eval_rows]
+
+        row = {
+            "path": summary.get("path", ""),
+            "run_name": summary.get("run_name", ""),
+            "dataset": summary.get("dataset", ""),
+            "scenario": summary.get("scenario", ""),
+            "method": method,
+            "seed": summary.get("seed", ""),
+            "rounds": summary.get("rounds", ""),
+            "selected_round": selected_round,
+            "auprc": _float(summary.get("selected_auprc"), _float(summary.get("last_auprc"))),
+            "recall": _mean_or(recall_vals, _float(summary.get("selected_recall"))),
+            "f1": _mean_or(f1_vals, _float(summary.get("selected_f1"))),
+            "fpr": _mean_or(fpr_vals, _float(summary.get("selected_fpr"))),
+            "avg_fpr_violation": _mean_or(violation_vals, _float(summary.get("selected_fpr_violation"))),
+            "violation_rate": _mean_or(flag_vals, _float(summary.get("selected_fpr_violation_flag"))),
+            "worst_client_recall": _min_or(recall_vals, _float(summary.get("selected_recall"))),
+            "client_fpr_std": _std(fpr_vals),
+            "threshold_std": _std(threshold_vals),
+        }
+
+        beta_vals = [_float(r.get("train_beta", r.get("beta"))) for r in train_rows]
+        risk_factor_vals = [_float(r.get("risk_aggregation_factor")) for r in train_rows]
+        reliability_vals = [_float(r.get("update_reliability")) for r in train_rows]
+        smooth_fpr_vals = [_float(r.get("smooth_train_fpr")) for r in train_rows]
+        smooth_fnr_vals = [_float(r.get("smooth_train_fnr")) for r in train_rows]
+        row.update({
+            "train_beta": _mean_or(beta_vals),
+            "risk_aggregation_factor_std": _std(risk_factor_vals),
+            "update_reliability": _mean_or(reliability_vals),
+            "smooth_train_fpr": _mean_or(smooth_fpr_vals),
+            "smooth_train_fnr": _mean_or(smooth_fnr_vals),
+        })
+        out.append(row)
+    return out
+
+
+def aggregate_ablation_chosen_percent(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[(str(row.get("dataset", "")), str(row.get("scenario", "")), str(row.get("method", "")))].append(row)
+    out: list[dict[str, Any]] = []
+    method_order = {m: i for i, m in enumerate(ABLATION_METHODS)}
+    for (dataset, scenario, method), group in sorted(
+        groups.items(), key=lambda x: (x[0][0], x[0][1], method_order.get(x[0][2], 999))
+    ):
+        out.append({
+            "Dataset": dataset,
+            "Scenario": scenario,
+            "Method": DISPLAY.get(method, method),
+            "AUPRC (%)": _fmt_percent([_float(g.get("auprc")) for g in group]),
+            "Recall (%)": _fmt_percent([_float(g.get("recall")) for g in group]),
+            "F1 (%)": _fmt_percent([_float(g.get("f1")) for g in group]),
+            "FPR (%)": _fmt_percent([_float(g.get("fpr")) for g in group]),
+            "Avg. FPR Violation (%)": _fmt_percent([_float(g.get("avg_fpr_violation")) for g in group]),
+            "Violation Rate (%)": _fmt_percent([_float(g.get("violation_rate")) for g in group]),
+            "Worst-client Recall (%)": _fmt_percent([_float(g.get("worst_client_recall")) for g in group]),
+            "Client-FPR Std (%)": _fmt_percent([_float(g.get("client_fpr_std")) for g in group]),
+            "Seeds": len({str(g.get("seed", "")) for g in group}),
+        })
+    return out
+
+
+def aggregate_ablation_diagnostics_percent(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[(str(row.get("dataset", "")), str(row.get("scenario", "")), str(row.get("method", "")))].append(row)
+    out: list[dict[str, Any]] = []
+    method_order = {m: i for i, m in enumerate(ABLATION_METHODS)}
+    for (dataset, scenario, method), group in sorted(
+        groups.items(), key=lambda x: (x[0][0], x[0][1], method_order.get(x[0][2], 999))
+    ):
+        out.append({
+            "Dataset": dataset,
+            "Scenario": scenario,
+            "Method": DISPLAY.get(method, method),
+            "Train Beta": _fmt_mean_std([_float(g.get("train_beta")) for g in group]),
+            "Risk Factor Std": _fmt_mean_std([_float(g.get("risk_aggregation_factor_std")) for g in group]),
+            "Update Reliability": _fmt_mean_std([_float(g.get("update_reliability")) for g in group]),
+            "Smooth Train FPR (%)": _fmt_percent([_float(g.get("smooth_train_fpr")) for g in group]),
+            "Smooth Train FNR (%)": _fmt_percent([_float(g.get("smooth_train_fnr")) for g in group]),
+            "Threshold Std (%)": _fmt_percent([_float(g.get("threshold_std")) for g in group]),
+            "Seeds": len({str(g.get("seed", "")) for g in group}),
+        })
+    return out
+
+
 def aggregate(rows: list[dict[str, Any]], key_prefix: str = "selected") -> list[dict[str, Any]]:
     groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for r in rows:
@@ -194,6 +376,17 @@ def write_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
     lines.append("|" + "|".join(["---"] * len(cols)) + "|")
     for r in rows:
         lines.append("| " + " | ".join(str(r.get(c, "")) for c in cols) + " |")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_generic_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    cols = list(rows[0].keys())
+    lines = ["| " + " | ".join(cols) + " |", "|" + "|".join(["---"] * len(cols)) + "|"]
+    for row in rows:
+        lines.append("| " + " | ".join(str(row.get(col, "")) for col in cols) + " |")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -302,6 +495,20 @@ def main() -> int:
         print(f"Wrote: {out_dir / 'client_threshold_runs_last.csv'}")
         print(f"Wrote: {out_dir / 'client_threshold_diagnostics_last.csv'}")
         print(f"Wrote: {out_dir / 'client_threshold_diagnostics_last.md'}")
+
+    ablation_runs = read_ablation_chosen_runs(rows)
+    write_csv(out_dir / "ablation_chosen_runs.csv", ablation_runs)
+    ablation_table = aggregate_ablation_chosen_percent(ablation_runs)
+    write_csv(out_dir / "table_ablation_chosen_percent_3seed.csv", ablation_table)
+    write_generic_markdown(out_dir / "table_ablation_chosen_percent_3seed.md", ablation_table)
+    ablation_diag = aggregate_ablation_diagnostics_percent(ablation_runs)
+    write_csv(out_dir / "table_ablation_diagnostics_percent_3seed.csv", ablation_diag)
+    write_generic_markdown(out_dir / "table_ablation_diagnostics_percent_3seed.md", ablation_diag)
+    print(f"Wrote: {out_dir / 'ablation_chosen_runs.csv'}")
+    print(f"Wrote: {out_dir / 'table_ablation_chosen_percent_3seed.csv'}")
+    print(f"Wrote: {out_dir / 'table_ablation_chosen_percent_3seed.md'}")
+    print(f"Wrote: {out_dir / 'table_ablation_diagnostics_percent_3seed.csv'}")
+    print(f"Wrote: {out_dir / 'table_ablation_diagnostics_percent_3seed.md'}")
     return 0
 
 
