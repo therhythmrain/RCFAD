@@ -11,6 +11,8 @@ from RCFAD.data import (
     BinaryAnomalyDataset,
     NormalScoreShiftDataset,
     TabularAnomalyDataset,
+    _is_tabular_dataset,
+    _load_tabular_arrays,
     load_centralized_dataset,
     load_data,
 )
@@ -41,6 +43,8 @@ __all__ = [
     "TabularAnomalyDataset",
     "load_data",
     "load_centralized_dataset",
+    "_is_tabular_dataset",
+    "_load_tabular_arrays",
     "collect_probs_and_labels",
     "evaluate_binary_metrics",
     "train",
