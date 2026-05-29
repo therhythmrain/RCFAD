@@ -1,0 +1,4 @@
+"""Shared constants for RC-FAD."""
+
+TABULAR_INPUT_DIM = 600
+TABULAR_CACHE_VERSION = 3

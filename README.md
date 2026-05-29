@@ -1,75 +1,198 @@
----
-tags: [quickstart, vision, fds]
-dataset: [CIFAR-10]
-framework: [torch, torchvision]
----
+# RC-FAD: Risk-Constrained Federated Anomaly Detection
 
-# Federated Learning with PyTorch and Flower (Quickstart Example)
+RC-FAD is a Flower/PyTorch implementation of federated anomaly detection under
+client-level low false-positive-rate constraints.  The code supports
+reproducible comparison, threshold-mechanism, ablation, heterogeneity, and
+sensitivity experiments for the paper workflow.
 
-This introductory example to Flower uses PyTorch, but deep knowledge of PyTorch is not necessarily required to run the example. However, it will help you understand how to adapt Flower to your use case. Running this example in itself is quite easy. This example uses [Flower Datasets](https://flower.ai/docs/datasets/) to download, partition and preprocess the CIFAR-10 dataset.
+## Core Idea
 
-## Set up the project
+RC-FAD focuses on risk-sensitive anomaly detection where each client can have a
+different normal-score distribution, anomaly ratio, and false-positive
+tolerance.  The implementation combines:
 
-### Fetch the app
+- client-specific trainable thresholds `tau_k`;
+- differentiable FPR/FNR proxies for low-FPR constrained optimization;
+- risk-gated hard-positive enhancement for rare anomaly learning;
+- risk/reliability-aware server aggregation.
 
-Install Flower:
+The most important experimental distinction is between ranking metrics
+(`AUPRC`, `Recall@FPR<=tau`) and deployment-threshold metrics
+(`Recall@chosen`, `F1@chosen`, `FPR@chosen`, client violation diagnostics).
 
-```shell
-pip install flwr
+## Repository Layout
+
+```text
+RCFAD/
+  client_app.py        Flower ClientApp
+  server_app.py        Flower ServerApp
+  custom_strategy.py   aggregation, logging, checkpointing, diagnostics
+  task.py              backward-compatible facade for old imports
+  constants.py         shared constants
+  model.py             binary image/tabular anomaly detector
+  data.py              dataset loading, caching, partitioning
+  metrics.py           AUPRC/AUROC/FPR/FNR and threshold diagnostics
+  training.py          local training and evaluation loops
+  utils.py             seeding and metadata helpers
+scripts/
+  run_experiments.py   experiment launcher
+  collect_results.py   result aggregation
+  build_paper_tables.py paper-ready tables
 ```
 
-Fetch the app:
-
-```shell
-flwr new @flwrlabs/quickstart-pytorch
-```
-
-This will create a new directory called `quickstart-pytorch` with the following structure:
-
-```shell
-quickstart-pytorch
-├── pytorchexample
-│   ├── __init__.py
-│   ├── client_app.py   # Defines your ClientApp
-│   ├── server_app.py   # Defines your ServerApp
-│   └── task.py         # Defines your model, training and data loading
-├── pyproject.toml      # Project metadata like dependencies and configs
-└── README.md
-```
-
-### Install dependencies and project
-
-Install the dependencies defined in `pyproject.toml` as well as the `pytorchexample` package.
+## Installation
 
 ```bash
 pip install -e .
 ```
 
-## Run the project
+The project has been used with Python 3.10, Flower 1.27, PyTorch 2.8, and
+Torchvision 0.23.  GPU runs can be selected through run-config extras such as
+`device=cuda:0 client-device=cuda:0 server-device=cuda:0`.
 
-You can run your Flower project in both _simulation_ and _deployment_ mode without making changes to the code. If you are starting with Flower, we recommend you using the _simulation_ mode as it requires fewer components to be launched manually. By default, `flwr run` will make use of the Simulation Engine.
+## Datasets
 
-### Run with the Simulation Engine
+Supported dataset names include:
 
-> [!TIP]
-> This example runs faster when the `ClientApp`s have access to a GPU. If your system has one, you can make use of it by configuring the `backend.client-resources` component in your Flower Configuration. Check the [Simulation Engine documentation](https://flower.ai/docs/framework/how-to-run-simulations.html) to learn more about Flower simulations and how to optimize them.
-
-```bash
-# Run with the default federation (CPU only)
-flwr run .
+```text
+cifar10, mnist, fmnist,
+creditcard, baf, ai4i, secom,
+swat, hai, smd, paysim,
+mammography, annthyroid, shuttle, tep
 ```
 
-You can also override some of the settings for your `ClientApp` and `ServerApp` defined in `pyproject.toml`. For example:
+For tabular and time-series datasets, put files under `data/<dataset>/` or pass
+`--extra "data-root=/path/to/data"`.  UCI/ADBench datasets can often be
+downloaded automatically; Kaggle-style datasets such as BAF, PaySim, and SWaT
+usually require manual download.
+
+## Quick Smoke Test
+
+Dry-run the commands without launching Flower:
 
 ```bash
-flwr run . --run-config "num-server-rounds=5 learning-rate=0.05"
+python scripts/run_experiments.py \
+  --suite quick \
+  --datasets ai4i \
+  --seeds 42 \
+  --rounds 1 \
+  --dry-run
 ```
 
-> [!TIP]
-> For a more detailed walk-through check our [quickstart PyTorch tutorial](https://flower.ai/docs/framework/tutorial-quickstart-pytorch.html)
+Run a tiny CPU smoke test:
 
-### Run with the Deployment Engine
+```bash
+python scripts/run_experiments.py \
+  --suite quick \
+  --datasets ai4i \
+  --seeds 42 \
+  --rounds 1 \
+  --num-supernodes 1 \
+  --client-cpus 2 \
+  --results-root outputs/smoke_quick
+```
 
-Follow this [how-to guide](https://flower.ai/docs/framework/how-to-run-flower-with-deployment-engine.html) to run the same app in this example but with Flower's Deployment Engine. After that, you might be intersted in setting up [secure TLS-enabled communications](https://flower.ai/docs/framework/how-to-enable-tls-connections.html) and [SuperNode authentication](https://flower.ai/docs/framework/how-to-authenticate-supernodes.html) in your federation.
+GPU example:
 
-If you are already familiar with how the Deployment Engine works, you may want to learn how to run it using Docker. Check out the [Flower with Docker](https://flower.ai/docs/framework/docker/index.html) documentation.
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/run_experiments.py \
+  --suite quick \
+  --datasets ai4i \
+  --seeds 42 \
+  --rounds 3 \
+  --num-supernodes 1 \
+  --client-cpus 8 \
+  --results-root outputs/smoke_quick_gpu \
+  --extra "device=cuda:0 client-device=cuda:0 server-device=cuda:0"
+```
+
+## Main Experiments
+
+List available suites and methods:
+
+```bash
+python scripts/run_experiments.py --list-methods
+```
+
+Representative comparison:
+
+```bash
+python scripts/run_experiments.py \
+  --suite compare \
+  --datasets ai4i secom annthyroid mammography tep shuttle \
+  --seeds 42 1234 3407 \
+  --rounds 30 \
+  --results-root outputs/stage_compare
+```
+
+Risk-heterogeneous ablation:
+
+```bash
+python scripts/run_experiments.py \
+  --suite ablation_risk \
+  --datasets ai4i secom annthyroid mammography tep shuttle \
+  --seeds 42 1234 3407 \
+  --rounds 30 \
+  --results-root outputs/stage_ablation_risk
+```
+
+Threshold-mechanism experiment without `FedAvg-Local-Post`:
+
+```bash
+python scripts/run_experiments.py \
+  --suite threshold_hetero \
+  --datasets ai4i secom annthyroid mammography tep shuttle \
+  --seeds 42 1234 3407 \
+  --rounds 30 \
+  --methods fedavg_fixed fedavg_global_post fedprox_local_post confree_local_post rcfad_global_joint rcfad \
+  --results-root outputs/stage_threshold
+```
+
+GPU threshold run:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/run_experiments.py \
+  --suite threshold_hetero \
+  --datasets ai4i secom annthyroid mammography tep shuttle \
+  --seeds 42 1234 3407 \
+  --rounds 30 \
+  --num-supernodes 1 \
+  --client-cpus 32 \
+  --methods fedavg_fixed fedavg_global_post fedprox_local_post confree_local_post rcfad_global_joint rcfad \
+  --results-root outputs/stage_threshold_gpu \
+  --extra "device=cuda:0 client-device=cuda:0 server-device=cuda:0"
+```
+
+## Result Collection
+
+```bash
+python scripts/collect_results.py --results-root outputs/stage_threshold
+python scripts/build_paper_tables.py \
+  --threshold-root outputs/stage_threshold \
+  --output-root outputs/paper_tables
+```
+
+Important summary files:
+
+```text
+<results-root>/_summary/all_runs.csv
+<results-root>/_summary/summary_selected.csv
+<results-root>/_summary/client_threshold_runs_selected.csv
+<results-root>/_summary/client_threshold_diagnostics_selected.csv
+<results-root>/_summary/table_threshold_core_percent_3seed_all6.csv
+<results-root>/_summary/table_threshold_deployment_diagnostics_percent_3seed_all6.csv
+```
+
+For paper tables, report percentages with two decimals, for example
+`33.24 ± 1.02`, and put the unit in the table header (`AUPRC (%)`,
+`F1@chosen (%)`, `FPR@chosen (%)`).
+
+## Notes
+
+- `AUPRC` and `AUROC` evaluate score ranking and are threshold-independent.
+- `Recall@FPR<=tau` and `F1@FPR<=tau` are useful low-FPR operating-point
+  ranking diagnostics.
+- Threshold-mechanism claims should use chosen/deployment-threshold metrics and
+  client-level diagnostics, not only post-hoc target-FPR metrics.
+- Large Flower/Ray GPU runs are more stable with low simulation concurrency,
+  for example `--num-supernodes 1 --client-cpus 32`.
